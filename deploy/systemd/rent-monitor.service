@@ -1,0 +1,44 @@
+# managed-by: rent-monitor
+[Unit]
+Description=Rent Monitor Telegram apartment search
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rent-monitor
+Group=rent-monitor
+WorkingDirectory=/opt/rent-monitor/current
+StateDirectory=rent-monitor
+StateDirectoryMode=0750
+Environment=RENT_MONITOR_DATABASE=/var/lib/rent-monitor/rent-monitor.sqlite3
+Environment=PYTHONDONTWRITEBYTECODE=1
+LoadCredential=telegram_bot_token:/etc/rent-monitor/telegram_bot_token
+ExecStart=/opt/rent-monitor/current/.venv/bin/rent-monitor serve --config /opt/rent-monitor/current/config/search.toml
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=30s
+UMask=0077
+
+CPUQuota=50%
+MemoryMax=1G
+TasksMax=64
+IOWeight=10
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/rent-monitor
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rent-monitor
+
+[Install]
+WantedBy=multi-user.target

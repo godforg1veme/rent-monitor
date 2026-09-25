@@ -1,0 +1,28 @@
+name: Ошибка
+description: Сообщить о проблеме в работе монитора
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Что произошло?
+      description: Опишите результат и что ожидалось.
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Источник
+      options:
+        - Avito
+        - Циан
+        - Домклик
+        - Яндекс Недвижимость
+        - Telegram
+        - Другое
+  - type: textarea
+    id: context
+    attributes:
+      label: Дополнительные сведения
+      description: Не прикладывайте токены, HTML страницы, телефоны и данные продавцов.
+    validations:
+      required: false
