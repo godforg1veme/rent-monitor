@@ -31,10 +31,10 @@ class TelegramNotifier:
         for item in listings:
             safe_url = _safe_url(item)
             if safe_url is not None:
-                buttons.append([InlineKeyboardButton(text=f"Открыть на {item.source}", url=safe_url)])
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=buttons
-        )
+                buttons.append(
+                    [InlineKeyboardButton(text=f"Открыть на {item.source}", url=safe_url)]
+                )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await self.bot.send_message(
             chat_id=chat_id,
             text=format_notification(notification.listing, notification.alternatives),
@@ -60,12 +60,16 @@ def create_dispatcher(
             await message.answer("Бот уже привязан к личному чату владельца.")
             return
         if not command.args:
-            await message.answer("Для привязки отправьте /start и одноразовый код из консоли сервера.")
+            await message.answer(
+                "Для привязки отправьте /start и одноразовый код из консоли сервера."
+            )
             return
         if await repository.consume_pairing_code(command.args.strip(), chat_id):
             await message.answer("Личный чат привязан. Новые объявления будут приходить сюда.")
         else:
-            await message.answer("Код недействителен или уже истёк. Выпустите новый код на сервере.")
+            await message.answer(
+                "Код недействителен или уже истёк. Выпустите новый код на сервере."
+            )
 
     async def require_owner(message: Message) -> bool:
         if message.chat.type != "private":
@@ -85,7 +89,9 @@ def create_dispatcher(
                 lines.append(f"{html.escape(_source_label(source))}: ещё не проверялся")
                 continue
             last_success = _format_time(record.last_success_at)
-            failure = f", причина: {html.escape(record.failure_code)}" if record.failure_code else ""
+            failure = (
+                f", причина: {html.escape(record.failure_code)}" if record.failure_code else ""
+            )
             lines.append(
                 f"{html.escape(_source_label(source))}: {html.escape(record.health.value)}, "
                 f"последняя удачная проверка: {last_success}{failure}"
@@ -122,12 +128,17 @@ def format_notification(listing: Listing, alternatives: tuple[Listing, ...] = ()
     if listing.address:
         lines.append(f"Адрес: {html.escape(listing.address)}")
     if listing.metro:
-        metro_suffix = f", {listing.metro_minutes} мин." if listing.metro_minutes is not None else ""
+        metro_suffix = (
+            f", {listing.metro_minutes} мин." if listing.metro_minutes is not None else ""
+        )
         lines.append(f"Метро: {html.escape(listing.metro)}{html.escape(metro_suffix)}")
     lines.append("Комиссия: без комиссии")
 
     sources = [listing.source, *(item.source for item in alternatives)]
-    lines.append("Источник: " + ", ".join(html.escape(_source_label(source)) for source in dict.fromkeys(sources)))
+    lines.append(
+        "Источник: "
+        + ", ".join(html.escape(_source_label(source)) for source in dict.fromkeys(sources))
+    )
     return "\n".join(lines)
 
 

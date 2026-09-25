@@ -7,13 +7,13 @@ from datetime import datetime
 from enum import Enum, StrEnum
 
 
-class CommissionStatus(str, Enum):
+class CommissionStatus(StrEnum):
     NONE = "none"
     POSITIVE = "positive"
     UNKNOWN = "unknown"
 
 
-class SellerType(str, Enum):
+class SellerType(StrEnum):
     PRIVATE = "private"
     AGENCY = "agency"
     UNKNOWN = "unknown"
@@ -75,7 +75,9 @@ class Listing:
     def __post_init__(self) -> None:
         if not self.source.strip() or not self.source_id.strip() or not self.url.strip():
             raise ValueError("source, source_id, and url must not be empty")
-        object.__setattr__(self, "seller_type", _enum_value(SellerType, self.seller_type, "seller_type"))
+        object.__setattr__(
+            self, "seller_type", _enum_value(SellerType, self.seller_type, "seller_type")
+        )
         object.__setattr__(
             self,
             "commission_status",
@@ -126,7 +128,9 @@ class Candidate:
     def __post_init__(self) -> None:
         if not self.source.strip() or not self.source_id.strip() or not self.url.strip():
             raise ValueError("source, source_id, and url must not be empty")
-        object.__setattr__(self, "seller_type", _enum_value(SellerType, self.seller_type, "seller_type"))
+        object.__setattr__(
+            self, "seller_type", _enum_value(SellerType, self.seller_type, "seller_type")
+        )
         object.__setattr__(
             self,
             "commission_status",

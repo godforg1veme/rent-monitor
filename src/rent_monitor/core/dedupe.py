@@ -9,7 +9,6 @@ from collections.abc import Sequence
 
 from .models import Listing
 
-
 _ADDRESS_ABBREVIATIONS = {
     "б-р": "бульвар",
     "бул": "бульвар",
@@ -58,11 +57,18 @@ def cross_source_match(left: Listing, right: Listing) -> bool:
         return False
     if left.address is None or right.address is None:
         return False
-    if left.rooms is None or right.rooms is None or left.price_rub is None or right.price_rub is None:
+    if (
+        left.rooms is None
+        or right.rooms is None
+        or left.price_rub is None
+        or right.price_rub is None
+    ):
         return False
     if left.area_m2 is None or right.area_m2 is None:
         return False
-    if not normalize_address(left.address) or normalize_address(left.address) != normalize_address(right.address):
+    if not normalize_address(left.address) or normalize_address(left.address) != normalize_address(
+        right.address
+    ):
         return False
     return (
         left.rooms == right.rooms
@@ -74,7 +80,7 @@ def cross_source_match(left: Listing, right: Listing) -> bool:
 def group_key_for_listing(listing: Listing) -> str:
     """Produce a stable group seed from a member identity, not a loose address key."""
     source, source_id = listing_identity(listing)
-    digest = hashlib.sha256(f"{source}\0{source_id}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{source}\0{source_id}".encode()).hexdigest()
     return f"listing:{digest}"
 
 

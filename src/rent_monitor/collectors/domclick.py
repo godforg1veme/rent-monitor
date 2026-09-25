@@ -8,16 +8,17 @@ or private routes, authenticate, or retry around access restrictions.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from rent_monitor.core.models import (
     CollectionResult,
+    Listing,
     SearchCriteria,
     SourceHealth,
-    Listing,
 )
 from rent_monitor.parsers.domclick import parse_search_page
 
@@ -35,8 +36,7 @@ class DomclickCollector:
         parsed = urlparse(public_search_url or "")
         self.public_search_url = (
             public_search_url
-            if parsed.scheme == "https"
-            and parsed.hostname in {"domclick.ru", "www.domclick.ru"}
+            if parsed.scheme == "https" and parsed.hostname in {"domclick.ru", "www.domclick.ru"}
             else None
         )
         self._paused_reason: str | None = None
@@ -49,7 +49,7 @@ class DomclickCollector:
     async def collect(
         self, criteria: SearchCriteria, client: BoundedHttpClient
     ) -> CollectionResult:
-        observed_at = datetime.now(timezone.utc)
+        observed_at = datetime.now(UTC)
         if self._paused_reason:
             return self._result(SourceHealth.PAUSED, self._paused_reason, observed_at)
         if not self.public_search_url:
@@ -143,5 +143,5 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
         except (TypeError, ValueError, OverflowError):
             return None
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+            when = when.replace(tzinfo=UTC)
+        return max(0.0, (when - datetime.now(UTC)).total_seconds())

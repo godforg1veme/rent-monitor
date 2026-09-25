@@ -5,7 +5,6 @@ import re
 from rent_monitor.core.models import Candidate, Listing, SearchPageParse
 from rent_monitor.parsers.common import parse_jsonld_detail_page, parse_jsonld_search_page
 
-
 _ALLOWED_HOSTS = frozenset({"avito.ru", "www.avito.ru"})
 _LISTING_ID = re.compile(r"(?:_|/)(\d{7,})(?:\.|/|$)")
 

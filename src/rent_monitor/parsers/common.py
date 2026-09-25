@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from rent_monitor.core.models import (
@@ -246,7 +247,11 @@ def _commission(node: dict[str, Any]) -> tuple[CommissionStatus, int | None, str
         return CommissionStatus.UNKNOWN, None, unit
     if amount == 0:
         return CommissionStatus.NONE, 0, unit
-    return CommissionStatus.POSITIVE, int(amount) if amount == amount.to_integral_value() else None, unit
+    return (
+        CommissionStatus.POSITIVE,
+        int(amount) if amount == amount.to_integral_value() else None,
+        unit,
+    )
 
 
 def _published_at(node: dict[str, Any]) -> datetime | None:
@@ -427,7 +432,11 @@ def parse_jsonld_detail_page(
         commission_status=commission_status
         if commission_status is not CommissionStatus.UNKNOWN
         else candidate.commission_status,
-        commission_value=commission_value if commission_status is not CommissionStatus.UNKNOWN else candidate.commission_value,
-        commission_unit=commission_unit if commission_status is not CommissionStatus.UNKNOWN else candidate.commission_unit,
+        commission_value=commission_value
+        if commission_status is not CommissionStatus.UNKNOWN
+        else candidate.commission_value,
+        commission_unit=commission_unit
+        if commission_status is not CommissionStatus.UNKNOWN
+        else candidate.commission_unit,
         published_at=_published_at(item) or candidate.published_at,
     )

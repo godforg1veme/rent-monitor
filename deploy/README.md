@@ -33,6 +33,18 @@ sudo -u rent-monitor env RENT_MONITOR_DATABASE=/var/lib/rent-monitor/rent-monito
 
 После привязки бот принимает команды `/status`, `/pause` и `/resume`. Pairing code имеет короткий срок действия и может быть использован один раз.
 
+Если сайт приостановил источник из-за CAPTCHA или отказа в доступе, сначала проверьте обычную публичную страницу и обновите код источника. После публикации и установки исправления снимите сохранённый статус при остановленной службе, затем запустите её снова:
+
+```sh
+sudo systemctl stop rent-monitor
+sudo -u rent-monitor env RENT_MONITOR_DATABASE=/var/lib/rent-monitor/rent-monitor.sqlite3 \
+  /opt/rent-monitor/current/.venv/bin/rent-monitor resume-source yandex \
+  --config /opt/rent-monitor/current/config/search.toml
+sudo systemctl start rent-monitor
+```
+
+Не запускайте эту команду для возобновления сбора, если доступ к публичной странице по-прежнему ограничен.
+
 ## Состояние службы
 
 ```sh

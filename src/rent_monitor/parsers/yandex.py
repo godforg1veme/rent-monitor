@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from rent_monitor.core.models import Candidate, Listing, SearchPageParse
-
 
 _BLOCKED_MARKERS = (
     "smartcaptcha",
@@ -126,7 +125,9 @@ def _strip_sensitive_fields(value: Any) -> Any:
 def _blocked_reason(html: str) -> str | None:
     lowered = html.casefold()
     if any(marker in lowered for marker in _BLOCKED_MARKERS):
-        return "captcha" if "captcha" in lowered or "smartcaptcha" in lowered else "access_restricted"
+        return (
+            "captcha" if "captcha" in lowered or "smartcaptcha" in lowered else "access_restricted"
+        )
     return None
 
 
@@ -224,7 +225,7 @@ def _published_at(value: Any) -> datetime | None:
         if stamp > 100_000_000_000:
             stamp /= 1000
         try:
-            return datetime.fromtimestamp(stamp, tz=timezone.utc)
+            return datetime.fromtimestamp(stamp, tz=UTC)
         except (OverflowError, OSError, ValueError):
             return None
     if isinstance(value, str):
@@ -232,7 +233,7 @@ def _published_at(value: Any) -> datetime | None:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
     return None
 
 
@@ -302,9 +303,7 @@ def _candidate(offer: dict[str, Any], base_url: str) -> Candidate | None:
         or _mapping_value(offer, "pricingPeriod", "rentPeriod")
         or ""
     ).upper()
-    monthly = period in _MONTH_UNITS or any(
-        marker in period for marker in ("MONTH", "МЕСЯЦ")
-    )
+    monthly = period in _MONTH_UNITS or any(marker in period for marker in ("MONTH", "МЕСЯЦ"))
     raw_price_value = _mapping_value(raw_price, "value", "amount")
     price = _integer(raw_price_value) if currency in {"RUB", "RUR"} and monthly else None
 

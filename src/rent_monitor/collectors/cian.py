@@ -5,7 +5,7 @@ to a direct page fetch. The collector therefore remains paused and does not
 retry or look for alternate routes.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from rent_monitor.core.models import CollectionResult, SearchCriteria, SourceHealth
@@ -32,7 +32,7 @@ async def collect(
         listings=[],
         status=SourceHealth.PAUSED,
         failure_code=PAUSE_REASON,
-        observed_at=datetime.now(timezone.utc),
+        observed_at=datetime.now(UTC),
     )
 
 

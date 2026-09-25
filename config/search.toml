@@ -7,8 +7,6 @@ poll_interval_seconds = 300
 
 [limits]
 max_response_bytes = 8388608
-detail_pages_per_source_per_cycle = 5
-detail_pages_per_source_per_minute = 1
 
 [sources]
 avito = true

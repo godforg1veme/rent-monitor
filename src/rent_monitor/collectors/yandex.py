@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING
 
 from rent_monitor.core.models import (
     Candidate,
@@ -28,10 +29,7 @@ if TYPE_CHECKING:
 # This canonical path is linked by the public consumer site and applies the
 # two-room plus no-commission filters. The monthly price ceiling stays in the
 # shared filter because no public maximum-price path was confirmed.
-SEARCH_URL = (
-    "https://realty.yandex.ru/moskva/snyat/kvartira/"
-    "dvuhkomnatnaya/bez-komissii/"
-)
+SEARCH_URL = "https://realty.yandex.ru/moskva/snyat/kvartira/dvuhkomnatnaya/bez-komissii/"
 _MIN_DETAIL_INTERVAL_SECONDS = 60.0
 _MAX_PENDING_DETAILS = 50
 _MAX_ATTEMPTED_DETAILS = 512
@@ -50,8 +48,8 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
         except (TypeError, ValueError, OverflowError):
             return None
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+            when = when.replace(tzinfo=UTC)
+        return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 def _listing(candidate: Candidate) -> Listing:
@@ -87,7 +85,9 @@ def _merge_listing(base: Listing, detail: Listing) -> Listing:
         rooms=detail.rooms if detail.rooms is not None else base.rooms,
         area_m2=detail.area_m2 if detail.area_m2 is not None else base.area_m2,
         metro=detail.metro or base.metro,
-        metro_minutes=detail.metro_minutes if detail.metro_minutes is not None else base.metro_minutes,
+        metro_minutes=detail.metro_minutes
+        if detail.metro_minutes is not None
+        else base.metro_minutes,
         seller_type=detail.seller_type if detail.seller_type != "unknown" else base.seller_type,
         commission_status=(
             detail.commission_status
@@ -123,13 +123,11 @@ class YandexCollector:
     async def collect(
         self, criteria: SearchCriteria, client: BoundedHttpClient
     ) -> CollectionResult:
-        observed_at = datetime.now(timezone.utc)
+        observed_at = datetime.now(UTC)
         if self._paused_reason:
             return self._result([], SourceHealth.PAUSED, self._paused_reason, observed_at)
         if criteria.city.strip().casefold() != "москва" or criteria.rooms != 2:
-            return self._result(
-                [], SourceHealth.ERROR, "unsupported_search_criteria", observed_at
-            )
+            return self._result([], SourceHealth.ERROR, "unsupported_search_criteria", observed_at)
 
         try:
             status_code, html, headers = await client.get_text(SEARCH_URL)
@@ -191,7 +189,10 @@ class YandexCollector:
         self, candidates: list[Candidate], criteria: SearchCriteria
     ) -> None:
         for candidate in candidates:
-            if candidate.source_id in self._queued_ids or candidate.source_id in self._attempted_ids:
+            if (
+                candidate.source_id in self._queued_ids
+                or candidate.source_id in self._attempted_ids
+            ):
                 continue
             if candidate.rooms != criteria.rooms:
                 continue
@@ -204,12 +205,10 @@ class YandexCollector:
             self._pending_details.append(candidate)
             self._queued_ids.add(candidate.source_id)
 
-    async def _enrich_one(
-        self, listings: dict[str, Listing], client: BoundedHttpClient
-    ):
+    async def _enrich_one(self, listings: dict[str, Listing], client: BoundedHttpClient):
         if not self._pending_details:
             return None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self._last_detail_request_at is not None:
             elapsed = (now - self._last_detail_request_at).total_seconds()
             if elapsed < _MIN_DETAIL_INTERVAL_SECONDS:
@@ -237,9 +236,7 @@ class YandexCollector:
 
         enriched = parse_detail_page(html, candidate)
         if enriched is not None and candidate.source_id in listings:
-            listings[candidate.source_id] = _merge_listing(
-                listings[candidate.source_id], enriched
-            )
+            listings[candidate.source_id] = _merge_listing(listings[candidate.source_id], enriched)
         return None
 
     def _remember_attempt(self, source_id: str) -> None:

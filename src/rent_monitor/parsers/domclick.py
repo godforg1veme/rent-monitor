@@ -16,7 +16,6 @@ from urllib.parse import urljoin, urlparse
 
 from rent_monitor.core.models import Candidate, SearchPageParse
 
-
 _BLOCKED_MARKERS = (
     "captcha",
     "smartcaptcha",
@@ -65,7 +64,9 @@ class _JsonLdScripts(HTMLParser):
 def _blocked_reason(html: str) -> str | None:
     lowered = html.casefold()
     if any(marker in lowered for marker in _BLOCKED_MARKERS):
-        return "captcha" if "captcha" in lowered or "smartcaptcha" in lowered else "access_restricted"
+        return (
+            "captcha" if "captcha" in lowered or "smartcaptcha" in lowered else "access_restricted"
+        )
     return None
 
 
@@ -108,11 +109,7 @@ def _float(value: Any) -> float | None:
         return float(value)
     if isinstance(value, str):
         normalized = (
-            value.strip()
-            .replace("\u00a0", " ")
-            .replace(" ", "")
-            .replace("₽", "")
-            .replace(",", ".")
+            value.strip().replace("\u00a0", " ").replace(" ", "").replace("₽", "").replace(",", ".")
         )
         try:
             return float(normalized)

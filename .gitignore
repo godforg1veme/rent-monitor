@@ -1,11 +1,17 @@
 .venv/
+.credentials/
+.local-credentials/
 __pycache__/
 *.py[cod]
+.ruff_cache/
+.pytest_cache/
+.coverage
 .env
 .env.*
 !.env.example
 secrets/
 data/
+*.log
 *.db
 *.sqlite
 *.sqlite3

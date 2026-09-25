@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,23 +49,37 @@ def load_config(path: Path) -> RuntimeConfig:
         raise ConfigurationError("Секция [sources] должна быть таблицей")
 
     try:
-        criteria = SearchCriteria(
-            city=str(search["city"]).strip(),
-            rooms=int(search["rooms"]),
-            max_monthly_price_rub=int(search["max_monthly_price_rub"]),
-            require_no_commission=bool(search["require_no_commission"]),
-        )
-        interval = int(search.get("poll_interval_seconds", 300))
-        max_response_bytes = int(limits.get("max_response_bytes", 8 * 1024 * 1024))
+        city = search["city"]
+        rooms = search["rooms"]
+        max_price = search["max_monthly_price_rub"]
+        no_commission = search["require_no_commission"]
+        interval = search.get("poll_interval_seconds", 300)
+        max_response_bytes = limits.get("max_response_bytes", 8 * 1024 * 1024)
         database = raw.get("database", {})
         if not isinstance(database, dict):
             raise TypeError("database must be a table")
-        database_path = Path(
-            os.environ.get(
-                "RENT_MONITOR_DATABASE",
-                str(database.get("path", "data/rent-monitor.sqlite3")),
-            )
+        database_value = database.get("path", "data/rent-monitor.sqlite3")
+        if (
+            not isinstance(city, str)
+            or isinstance(rooms, bool)
+            or not isinstance(rooms, int)
+            or isinstance(max_price, bool)
+            or not isinstance(max_price, int)
+            or not isinstance(no_commission, bool)
+            or isinstance(interval, bool)
+            or not isinstance(interval, int)
+            or isinstance(max_response_bytes, bool)
+            or not isinstance(max_response_bytes, int)
+            or not isinstance(database_value, str)
+        ):
+            raise TypeError("configuration values have the wrong type")
+        criteria = SearchCriteria(
+            city=city.strip(),
+            rooms=rooms,
+            max_monthly_price_rub=max_price,
+            require_no_commission=no_commission,
         )
+        database_path = Path(os.environ.get("RENT_MONITOR_DATABASE", database_value))
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigurationError("Не хватает обязательных значений поиска или лимитов") from exc
 
@@ -77,11 +92,15 @@ def load_config(path: Path) -> RuntimeConfig:
     if max_response_bytes < 1024 or max_response_bytes > 8 * 1024 * 1024:
         raise ConfigurationError("Размер ответа должен быть в диапазоне от 1 KiB до 8 MiB")
 
-    sources = tuple(
-        SourceConfig(name=str(name), enabled=bool(enabled))
-        for name, enabled in source_table.items()
-    )
     expected = {"avito", "cian", "domclick", "yandex"}
+    if any(
+        not isinstance(name, str) or not isinstance(enabled, bool)
+        for name, enabled in source_table.items()
+    ):
+        raise ConfigurationError("Каждый источник должен иметь логическое значение true или false")
+    sources = tuple(
+        SourceConfig(name=name, enabled=enabled) for name, enabled in source_table.items()
+    )
     configured = {source.name for source in sources}
     if configured != expected:
         raise ConfigurationError("В [sources] должны быть заданы avito, cian, domclick и yandex")
@@ -105,7 +124,6 @@ def read_telegram_token() -> str:
         token = token_path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise ConfigurationError("Telegram bot credential is missing") from exc
-    if not token or "\n" in token:
+    if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", token):
         raise ConfigurationError("Telegram bot credential is empty or malformed")
     return token
-

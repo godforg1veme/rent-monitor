@@ -7,14 +7,19 @@ import hashlib
 import hmac
 import re
 import secrets
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import AsyncIterator, Iterable
 
 import aiosqlite
 
-from rent_monitor.core.dedupe import cross_source_match, find_duplicate_group, group_key_for_listing, normalize_address
+from rent_monitor.core.dedupe import (
+    cross_source_match,
+    find_duplicate_group,
+    group_key_for_listing,
+    normalize_address,
+)
 from rent_monitor.core.models import (
     CommissionStatus,
     Listing,
@@ -23,7 +28,6 @@ from rent_monitor.core.models import (
     SourceHealth,
     SourceStatusRecord,
 )
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS listing_groups (
@@ -97,6 +101,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'delivered')),
     attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
+    next_attempt_at TEXT NOT NULL,
     claimed_until TEXT,
     delivered_at TEXT,
     last_error_code TEXT
@@ -267,9 +272,9 @@ class SQLiteRepository:
         outbox_created = False
         if notify:
             cursor = await connection.execute(
-                """INSERT INTO notification_outbox(group_id, created_at)
-                   VALUES (?, ?) ON CONFLICT(group_id) DO NOTHING""",
-                (group_id, now),
+                """INSERT INTO notification_outbox(group_id, created_at, next_attempt_at)
+                   VALUES (?, ?, ?) ON CONFLICT(group_id) DO NOTHING""",
+                (group_id, now, now),
             )
             outbox_created = cursor.rowcount == 1
             await cursor.close()
@@ -277,7 +282,12 @@ class SQLiteRepository:
 
     async def _select_group_for(self, connection: aiosqlite.Connection, listing: Listing) -> str:
         normalized = normalize_address(listing.address) if listing.address else ""
-        if normalized and listing.rooms is not None and listing.price_rub is not None and listing.area_m2 is not None:
+        if (
+            normalized
+            and listing.rooms is not None
+            and listing.price_rub is not None
+            and listing.area_m2 is not None
+        ):
             cursor = await connection.execute(
                 """SELECT * FROM listings
                    WHERE source <> ? AND address_norm = ? AND rooms = ? AND price_rub = ?
@@ -297,7 +307,7 @@ class SQLiteRepository:
             candidates = [_listing_from_row(row) for row in rows]
             duplicate_key = find_duplicate_group(listing, candidates)
             if duplicate_key is not None:
-                for row, candidate in zip(rows, candidates):
+                for row, candidate in zip(rows, candidates, strict=True):
                     if cross_source_match(listing, candidate):
                         return row["group_id"]
         return group_key_for_listing(listing)
@@ -305,7 +315,9 @@ class SQLiteRepository:
     async def enqueue_notification(self, group_id: str, listing: Listing) -> bool:
         """Atomically persist a listing and create its group's outbox item once."""
         async with self._transaction() as connection:
-            actual_group_id, _, created = await self._upsert_listing(connection, listing, notify=True)
+            actual_group_id, _, created = await self._upsert_listing(
+                connection, listing, notify=True
+            )
             if actual_group_id != group_id:
                 raise ValueError("group_id does not match the listing's persisted duplicate group")
             return created
@@ -318,9 +330,10 @@ class SQLiteRepository:
         async with self._transaction() as connection:
             cursor = await connection.execute(
                 """SELECT id, group_id, attempts FROM notification_outbox
-                   WHERE status = 'pending' OR (status = 'sending' AND claimed_until < ?)
+                   WHERE (status = 'pending' AND next_attempt_at <= ?)
+                     OR (status = 'sending' AND claimed_until < ?)
                    ORDER BY created_at, id LIMIT ?""",
-                (now.isoformat(), limit),
+                (now.isoformat(), now.isoformat(), limit),
             )
             rows = await cursor.fetchall()
             await cursor.close()
@@ -368,15 +381,30 @@ class SQLiteRepository:
         """Return a failed send to the queue with a closed-category error code."""
         safe_code = _valid_failure_code(error_code)
         async with self._transaction() as connection:
+            cursor = await connection.execute(
+                "SELECT attempts FROM notification_outbox WHERE id=?",
+                (notification_id,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            attempts = row["attempts"] if row is not None else 1
+            delay_seconds = min(2 ** min(max(attempts, 1), 12), 60 * 60)
+            next_attempt_at = (_now() + timedelta(seconds=delay_seconds)).isoformat()
             await connection.execute(
                 """UPDATE notification_outbox
-                   SET status='pending', claimed_until=NULL, last_error_code=? WHERE id=?""",
-                (safe_code, notification_id),
+                   SET status='pending', next_attempt_at=?, claimed_until=NULL,
+                       last_error_code=? WHERE id=?""",
+                (next_attempt_at, safe_code, notification_id),
             )
 
     async def find_duplicate_candidates(self, listing: Listing) -> list[Listing]:
         normalized = normalize_address(listing.address) if listing.address else ""
-        if not normalized or listing.rooms is None or listing.price_rub is None or listing.area_m2 is None:
+        if (
+            not normalized
+            or listing.rooms is None
+            or listing.price_rub is None
+            or listing.area_m2 is None
+        ):
             return []
         async with self._lock:
             cursor = await self._db().execute(
@@ -461,11 +489,13 @@ class SQLiteRepository:
         successful_at = (successful_at or attempted_at) if health is SourceHealth.OK else None
         async with self._transaction() as connection:
             await connection.execute(
-                """INSERT INTO source_status(source, health, last_attempt_at, last_success_at, failure_code)
+                """INSERT INTO source_status(
+                       source, health, last_attempt_at, last_success_at, failure_code)
                    VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(source) DO UPDATE SET health=excluded.health,
                      last_attempt_at=excluded.last_attempt_at,
-                     last_success_at=COALESCE(excluded.last_success_at, source_status.last_success_at),
+                     last_success_at=COALESCE(
+                       excluded.last_success_at, source_status.last_success_at),
                      failure_code=excluded.failure_code""",
                 (
                     source,
@@ -478,9 +508,7 @@ class SQLiteRepository:
 
     async def get_source_statuses(self) -> list[SourceStatusRecord]:
         async with self._lock:
-            cursor = await self._db().execute(
-                "SELECT * FROM source_status ORDER BY source"
-            )
+            cursor = await self._db().execute("SELECT * FROM source_status ORDER BY source")
             rows = await cursor.fetchall()
             await cursor.close()
         return [
@@ -493,6 +521,17 @@ class SQLiteRepository:
             )
             for row in rows
         ]
+
+    async def clear_source_pause(self, source: str) -> bool:
+        """Forget a persisted pause after an operator has reviewed the source."""
+        async with self._transaction() as connection:
+            cursor = await connection.execute(
+                "DELETE FROM source_status WHERE source=? AND health='paused'",
+                (source,),
+            )
+            cleared = cursor.rowcount == 1
+            await cursor.close()
+            return cleared
 
     async def issue_pairing_code(self, *, ttl_seconds: int = 600) -> str:
         if ttl_seconds < 1:
@@ -530,8 +569,10 @@ class SQLiteRepository:
             if row["allowed_chat_id"] is not None or row["pairing_code_hash"] is None:
                 return False
             expiry = _decode_datetime(row["pairing_expires_at"])
-            if expiry is None or expiry <= now or not hmac.compare_digest(
-                candidate_hash, row["pairing_code_hash"]
+            if (
+                expiry is None
+                or expiry <= now
+                or not hmac.compare_digest(candidate_hash, row["pairing_code_hash"])
             ):
                 return False
             await connection.execute(
@@ -547,7 +588,8 @@ class SQLiteRepository:
             raise ValueError("chat_id must be a positive private-chat identifier")
         async with self._transaction() as connection:
             cursor = await connection.execute(
-                "UPDATE owner_binding SET allowed_chat_id=? WHERE singleton=1 AND allowed_chat_id IS NULL",
+                """UPDATE owner_binding SET allowed_chat_id=?
+                   WHERE singleton=1 AND allowed_chat_id IS NULL""",
                 (chat_id,),
             )
             inserted = cursor.rowcount == 1

@@ -32,16 +32,20 @@ if [[ ! -f "$UNIT_SOURCE" ]]; then
     echo "The source directory does not contain the Rent Monitor unit." >&2
     exit 2
 fi
-if [[ -L "$APP_ROOT" || ( -e "$APP_ROOT" && ! -f "$APP_MARKER" ) ]]; then
+if [[ -L "$APP_ROOT" || ( -e "$APP_ROOT" && ( ! -f "$APP_MARKER" || -L "$APP_MARKER" ) ) ]]; then
     echo "Refusing to use an existing unmanaged path: $APP_ROOT" >&2
     exit 1
 fi
-if [[ -L "$CONFIG_ROOT" || ( -e "$CONFIG_ROOT" && ! -f "$CONFIG_MARKER" ) ]]; then
+if [[ -L "$CONFIG_ROOT" || ( -e "$CONFIG_ROOT" && ( ! -f "$CONFIG_MARKER" || -L "$CONFIG_MARKER" ) ) ]]; then
     echo "Refusing to use an existing unmanaged path: $CONFIG_ROOT" >&2
     exit 1
 fi
 if [[ -L "$RELEASE_ROOT" ]]; then
     echo "Refusing to use a symbolic-link release directory: $RELEASE_ROOT" >&2
+    exit 1
+fi
+if [[ -L "$UNIT_TARGET" ]]; then
+    echo "Refusing to replace a symbolic-link systemd unit: $UNIT_TARGET" >&2
     exit 1
 fi
 if [[ -e "$UNIT_TARGET" ]] && ! grep -Fq "$UNIT_MARKER" "$UNIT_TARGET"; then
@@ -65,6 +69,10 @@ install -o root -g root -m 0644 /dev/null "$APP_MARKER"
 install -d -o root -g root -m 0700 "$CONFIG_ROOT"
 install -o root -g root -m 0600 /dev/null "$CONFIG_MARKER"
 
+if [[ -L "$RELEASE" ]]; then
+    echo "Refusing to use a symbolic-link release path: $RELEASE" >&2
+    exit 1
+fi
 if [[ -e "$RELEASE" ]]; then
     if [[ ! -f "$RELEASE/.rent-monitor-release" || "$(cat "$RELEASE/.rent-monitor-release")" != "$REVISION" ]]; then
         echo "Refusing to replace an unmarked release directory: $RELEASE" >&2
@@ -90,10 +98,18 @@ install -o root -g root -m 0644 "$UNIT_SOURCE" "$UNIT_TARGET"
 systemctl daemon-reload
 
 if [[ -f "$TOKEN_FILE" ]]; then
+    if [[ -L "$TOKEN_FILE" ]]; then
+        echo "The Telegram credential must be a regular file, not a symbolic link." >&2
+        exit 1
+    fi
     token_uid="$(stat -c '%u' "$TOKEN_FILE")"
     token_mode="$(stat -c '%a' "$TOKEN_FILE")"
     if [[ "$token_uid" != 0 ]] || (( (8#$token_mode & 077) != 0 )); then
         echo "The Telegram credential must be root-owned and inaccessible to group/others." >&2
+        exit 1
+    fi
+    if ! grep -Eq '^[0-9]+:[A-Za-z0-9_-]{20,}$' "$TOKEN_FILE"; then
+        echo "The Telegram credential does not match the expected token format." >&2
         exit 1
     fi
     if systemctl is-active --quiet rent-monitor.service; then

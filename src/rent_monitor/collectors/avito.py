@@ -5,7 +5,7 @@ they are verified from Avito's ordinary public interface, this collector
 stays paused and performs no network requests.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from rent_monitor.core.models import CollectionResult, SearchCriteria, SourceHealth
@@ -30,7 +30,7 @@ async def collect(
         listings=[],
         status=SourceHealth.PAUSED,
         failure_code=PAUSE_REASON,
-        observed_at=datetime.now(timezone.utc),
+        observed_at=datetime.now(UTC),
     )
 
 

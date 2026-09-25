@@ -8,7 +8,6 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-
 ALLOWED_HOSTS = frozenset(
     {
         "avito.ru",
@@ -35,7 +34,12 @@ class RedirectLimitError(RuntimeError):
 class BoundedHttpClient:
     """HTTPX wrapper that serializes requests and caps decompressed responses."""
 
-    def __init__(self, max_response_bytes: int = 8 * 1024 * 1024) -> None:
+    def __init__(
+        self,
+        max_response_bytes: int = 8 * 1024 * 1024,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         if not 1024 <= max_response_bytes <= 8 * 1024 * 1024:
             raise ValueError("max_response_bytes must be between 1 KiB and 8 MiB")
         self.max_response_bytes = max_response_bytes
@@ -51,6 +55,7 @@ class BoundedHttpClient:
             follow_redirects=False,
             max_redirects=5,
             trust_env=False,
+            transport=transport,
         )
 
     async def __aenter__(self) -> BoundedHttpClient:
@@ -72,24 +77,30 @@ class BoundedHttpClient:
         for redirect_number in range(6):
             self._validate_url(current_url)
             async with self._semaphore:
-                async with self._client.stream("GET", current_url) as response:
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        location = response.headers.get("location")
-                        if location:
-                            if redirect_number == 5:
-                                raise RedirectLimitError("Too many redirects")
-                            current_url = urljoin(str(response.url), location)
-                            self._validate_url(current_url)
-                            continue
+                try:
+                    async with self._client.stream("GET", current_url) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if location:
+                                if redirect_number == 5:
+                                    raise RedirectLimitError("Too many redirects")
+                                current_url = urljoin(str(response.url), location)
+                                self._validate_url(current_url)
+                                continue
 
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if len(body) + len(chunk) > self.max_response_bytes:
-                            raise ResponseTooLargeError("Response exceeded configured size limit")
-                        body.extend(chunk)
-                    encoding = response.encoding or "utf-8"
-                    text = bytes(body).decode(encoding, errors="replace")
-                    return response.status_code, text, dict(response.headers)
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(body) + len(chunk) > self.max_response_bytes:
+                                raise ResponseTooLargeError(
+                                    "Response exceeded configured size limit"
+                                )
+                            body.extend(chunk)
+                        encoding = response.encoding or "utf-8"
+                        text = bytes(body).decode(encoding, errors="replace")
+                        return response.status_code, text, dict(response.headers)
+                finally:
+                    # Never carry a site's Set-Cookie values into another request.
+                    self._client.cookies.clear()
         raise RedirectLimitError("Too many redirects")
 
     @staticmethod
@@ -98,5 +109,7 @@ class BoundedHttpClient:
         hostname = (parsed.hostname or "").lower().rstrip(".")
         if parsed.scheme != "https" or not hostname:
             raise UnsafePageUrlError("Only HTTPS listing pages are allowed")
-        if not any(hostname == domain or hostname.endswith(f".{domain}") for domain in ALLOWED_HOSTS):
+        if not any(
+            hostname == domain or hostname.endswith(f".{domain}") for domain in ALLOWED_HOSTS
+        ):
             raise UnsafePageUrlError("Page host is outside the configured source domains")

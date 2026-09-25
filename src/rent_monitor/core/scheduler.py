@@ -50,6 +50,8 @@ async def process_collection_result(
             result.seen_source_ids or tuple(item.source_id for item in result.listings),
             observed_at=observed_at,
         )
+        for listing in result.listings:
+            await repository.upsert_listing(listing, notify=False)
         await repository.set_source_baseline(result.source, complete=True, completed_at=observed_at)
         logger.info("source=%s phase=baseline status=complete", result.source)
         return
@@ -72,12 +74,20 @@ async def deliver_outbox_once(repository: SQLiteRepository, notifier: Notifier) 
     for notification in await repository.claim_pending_notifications(limit=20):
         try:
             await notifier.send_notification(chat_id, notification)
+        except asyncio.CancelledError:
+            await repository.retry_notification(
+                notification.notification_id,
+                "delivery_interrupted",
+            )
+            raise
         except Exception:
             logger.warning(
                 "telegram phase=delivery status=retry notification_id=%s",
                 notification.notification_id,
             )
-            await repository.retry_notification(notification.notification_id, "telegram_send_failed")
+            await repository.retry_notification(
+                notification.notification_id, "telegram_send_failed"
+            )
         else:
             await repository.mark_delivered(notification.notification_id)
             delivered += 1
@@ -114,6 +124,7 @@ async def run_scheduler(
         raise ValueError("At least one collector must be configured")
 
     backoff_until: dict[str, float] = {}
+    previous_backoff_seconds: dict[str, float] = {}
     last_attempt_at: dict[str, float] = {}
     next_cycle = time.monotonic()
     while not stop_event.is_set():
@@ -134,7 +145,9 @@ async def run_scheduler(
             if backoff_until.get(collector.source, 0.0) > time.monotonic():
                 continue
 
-            minimum_interval = last_attempt_at.get(collector.source, float("-inf")) + poll_interval_seconds
+            minimum_interval = (
+                last_attempt_at.get(collector.source, float("-inf")) + poll_interval_seconds
+            )
             deadline = max(slot, minimum_interval)
             while time.monotonic() < deadline and not stop_event.is_set():
                 await _wait_until(deadline, stop_event, state_changed)
@@ -163,10 +176,22 @@ async def run_scheduler(
 
             await process_collection_result(result, criteria, repository)
             if result.retry_after_seconds is not None:
-                backoff_until[collector.source] = time.monotonic() + min(
-                    result.retry_after_seconds,
+                delay = min(result.retry_after_seconds, 6 * 60 * 60)
+                previous_backoff_seconds[collector.source] = delay
+                backoff_until[collector.source] = time.monotonic() + delay
+            elif result.failure_code == "rate_limited":
+                delay = min(
+                    max(
+                        poll_interval_seconds,
+                        previous_backoff_seconds.get(collector.source, 0) * 2,
+                    ),
                     6 * 60 * 60,
                 )
+                previous_backoff_seconds[collector.source] = delay
+                backoff_until[collector.source] = time.monotonic() + delay
+            elif result.status is SourceHealth.OK:
+                previous_backoff_seconds.pop(collector.source, None)
+                backoff_until.pop(collector.source, None)
 
         next_cycle = max(cycle_started + poll_interval_seconds, time.monotonic())
         await _wait_until(next_cycle, stop_event, state_changed)
