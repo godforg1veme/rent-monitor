@@ -11,3 +11,4 @@ data/
 *.sqlite3
 *.sqlite-wal
 *.sqlite-shm
+.worktrees/
