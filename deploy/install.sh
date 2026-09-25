@@ -86,6 +86,7 @@ else
     chmod 0644 "$stage/.rent-monitor-release"
     python3 -m venv "$stage/.venv"
     "$stage/.venv/bin/python" -m pip install --disable-pip-version-check "$stage"
+    chmod 0755 "$stage"
     mv "$stage" "$RELEASE"
     chown -hR root:root "$RELEASE"
 fi
