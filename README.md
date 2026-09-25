@@ -68,7 +68,7 @@ uv run --locked rent-monitor pair-code --config config/search.toml
 
 ## GitHub и изменения
 
-Проект хранится в приватном репозитории. Для pull request настроен GitHub Actions: он запускает E2E-сценарий на Python 3.11–3.14. Dependabot проверяет Python-зависимости и GitHub Actions.
+Проект хранится в приватном репозитории. GitHub Actions запускает E2E-сценарий и проверки стиля на Python 3.11–3.14. Для репозитория включены Dependabot alerts и автоматические security updates; Dependabot также обновляет Python-зависимости и GitHub Actions.
 
 Правила для изменений и уязвимостей описаны в [`CONTRIBUTING.md`](CONTRIBUTING.md) и [`SECURITY.md`](SECURITY.md). Конфигурация поиска находится в [`config/search.toml`](config/search.toml), архитектура и принятые ограничения — в [`docs/superpowers/specs/2026-09-25-rent-monitor-design.md`](docs/superpowers/specs/2026-09-25-rent-monitor-design.md).
 
