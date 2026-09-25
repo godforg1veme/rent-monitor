@@ -107,6 +107,11 @@ async def clear_source_pause(config_path: Path, source: str) -> bool:
 
 
 def cli() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         prog="rent-monitor",
         description="Поиск новых объявлений аренды по заданным фильтрам.",
