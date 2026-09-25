@@ -1,1 +1,1 @@
-"""Independent public-page collectors by listing source."""
+"""Independent HTTP collectors for public rental-search pages."""
