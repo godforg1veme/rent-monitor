@@ -430,6 +430,22 @@ class SQLiteRepository:
             await cursor.close()
         return bool(row and row["complete"])
 
+    async def is_baseline_candidate(self, source: str, source_id: str) -> bool:
+        """Return whether an ID was seen in that source's initial search cohort.
+
+        The scheduler can use this before delayed detail-page enrichment so an
+        initial baseline listing is never treated as a newly discovered result.
+        """
+        async with self._lock:
+            cursor = await self._db().execute(
+                """SELECT 1 FROM baseline_candidates
+                   WHERE source=? AND source_id=? LIMIT 1""",
+                (source, source_id),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+        return row is not None
+
     async def record_source_status(
         self,
         source: str,
