@@ -84,12 +84,17 @@ else
     cp -a "$SOURCE_ROOT/." "$stage/"
     printf '%s\n' "$REVISION" >"$stage/.rent-monitor-release"
     chmod 0644 "$stage/.rent-monitor-release"
-    python3 -m venv "$stage/.venv"
-    "$stage/.venv/bin/python" -m pip install --disable-pip-version-check "$stage"
     chmod 0755 "$stage"
     mv "$stage" "$RELEASE"
     chown -hR root:root "$RELEASE"
 fi
+
+if [[ -L "$RELEASE/.venv" ]]; then
+    echo "Refusing to use a symbolic-link virtual environment: $RELEASE/.venv" >&2
+    exit 1
+fi
+python3 -m venv --clear "$RELEASE/.venv"
+"$RELEASE/.venv/bin/python" -m pip install --disable-pip-version-check "$RELEASE"
 
 temporary_link="$APP_ROOT/.current-$REVISION"
 ln -sfn "$RELEASE" "$temporary_link"
