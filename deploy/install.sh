@@ -26,10 +26,12 @@ CONFIG_MARKER="$CONFIG_ROOT/.rent-monitor-managed"
 TOKEN_FILE="$CONFIG_ROOT/telegram_bot_token"
 UNIT_SOURCE="$SOURCE_ROOT/deploy/systemd/rent-monitor.service"
 UNIT_TARGET=/etc/systemd/system/rent-monitor.service
+CAPTCHA_UNIT_SOURCE="$SOURCE_ROOT/deploy/systemd/rent-monitor-captcha.service"
+CAPTCHA_UNIT_TARGET=/etc/systemd/system/rent-monitor-captcha.service
 UNIT_MARKER='# managed-by: rent-monitor'
 
-if [[ ! -f "$UNIT_SOURCE" ]]; then
-    echo "The source directory does not contain the Rent Monitor unit." >&2
+if [[ ! -f "$UNIT_SOURCE" || ! -f "$CAPTCHA_UNIT_SOURCE" ]]; then
+    echo "The source directory does not contain both Rent Monitor units." >&2
     exit 2
 fi
 if [[ -L "$APP_ROOT" || ( -e "$APP_ROOT" && ( ! -f "$APP_MARKER" || -L "$APP_MARKER" ) ) ]]; then
@@ -44,13 +46,24 @@ if [[ -L "$RELEASE_ROOT" ]]; then
     echo "Refusing to use a symbolic-link release directory: $RELEASE_ROOT" >&2
     exit 1
 fi
-if [[ -L "$UNIT_TARGET" ]]; then
-    echo "Refusing to replace a symbolic-link systemd unit: $UNIT_TARGET" >&2
-    exit 1
-fi
-if [[ -e "$UNIT_TARGET" ]] && ! grep -Fq "$UNIT_MARKER" "$UNIT_TARGET"; then
-    echo "Refusing to replace an unmanaged systemd unit: $UNIT_TARGET" >&2
-    exit 1
+for unit_target in "$UNIT_TARGET" "$CAPTCHA_UNIT_TARGET"; do
+    if [[ -L "$unit_target" ]]; then
+        echo "Refusing to replace a symbolic-link systemd unit: $unit_target" >&2
+        exit 1
+    fi
+    if [[ -e "$unit_target" ]] && ! grep -Fq "$UNIT_MARKER" "$unit_target"; then
+        echo "Refusing to replace an unmanaged systemd unit: $unit_target" >&2
+        exit 1
+    fi
+done
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends \
+    ca-certificates curl python3 python3-pip python3-venv \
+    xvfb x11vnc novnc websockify
+if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
 if getent passwd rent-monitor >/dev/null; then
@@ -93,15 +106,22 @@ if [[ -L "$RELEASE/.venv" ]]; then
     echo "Refusing to use a symbolic-link virtual environment: $RELEASE/.venv" >&2
     exit 1
 fi
-python3 -m venv --clear "$RELEASE/.venv"
-"$RELEASE/.venv/bin/python" -m pip install --disable-pip-version-check "$RELEASE"
+UV_ENV="$APP_ROOT/.uv-installer"
+python3 -m venv --clear "$UV_ENV"
+"$UV_ENV/bin/python" -m pip install --disable-pip-version-check 'uv==0.12.15'
+"$UV_ENV/bin/uv" sync --locked --project "$RELEASE" --python "$(command -v python3)"
+"$RELEASE/.venv/bin/playwright" install chromium
+"$RELEASE/.venv/bin/playwright" install-deps chromium
+chmod 0755 "$RELEASE/deploy/run-captcha-stack.sh"
 
 temporary_link="$APP_ROOT/.current-$REVISION"
 ln -sfn "$RELEASE" "$temporary_link"
 mv -Tf "$temporary_link" "$APP_ROOT/current"
 
 install -o root -g root -m 0644 "$UNIT_SOURCE" "$UNIT_TARGET"
+install -o root -g root -m 0644 "$CAPTCHA_UNIT_SOURCE" "$CAPTCHA_UNIT_TARGET"
 systemctl daemon-reload
+systemctl enable --now rent-monitor-captcha.service
 
 if [[ -f "$TOKEN_FILE" ]]; then
     if [[ -L "$TOKEN_FILE" ]]; then
@@ -119,7 +139,7 @@ if [[ -f "$TOKEN_FILE" ]]; then
         exit 1
     fi
     if systemctl is-active --quiet rent-monitor.service; then
-        systemctl restart rent-monitor.service
+        systemctl restart rent-monitor-captcha.service rent-monitor.service
     else
         systemctl enable --now rent-monitor.service
     fi

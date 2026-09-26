@@ -1,0 +1,39 @@
+# managed-by: rent-monitor
+[Unit]
+Description=Rent Monitor private CAPTCHA browser control stack
+After=network.target
+Before=rent-monitor.service
+
+[Service]
+Type=simple
+User=rent-monitor
+Group=rent-monitor
+RuntimeDirectory=rent-monitor-captcha
+RuntimeDirectoryMode=0700
+ExecStart=/opt/rent-monitor/current/deploy/run-captcha-stack.sh
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+UMask=0077
+
+CPUQuota=100%
+MemoryMax=1G
+TasksMax=128
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/rent-monitor-captcha
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rent-monitor-captcha
+
+[Install]
+WantedBy=multi-user.target

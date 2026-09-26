@@ -1,8 +1,9 @@
 # managed-by: rent-monitor
 [Unit]
 Description=Rent Monitor Telegram apartment search
-After=network-online.target
-Wants=network-online.target
+After=network-online.target rent-monitor-captcha.service tailscaled.service
+Wants=network-online.target rent-monitor-captcha.service
+JoinsNamespaceOf=rent-monitor-captcha.service
 
 [Service]
 Type=simple
@@ -12,6 +13,9 @@ WorkingDirectory=/opt/rent-monitor/current
 StateDirectory=rent-monitor
 StateDirectoryMode=0750
 Environment=RENT_MONITOR_DATABASE=/var/lib/rent-monitor/rent-monitor.sqlite3
+Environment=DISPLAY=:99
+Environment=RENT_MONITOR_CAPTCHA_TOKEN_DIRECTORY=/run/rent-monitor-captcha/tokens
+EnvironmentFile=-/etc/rent-monitor/environment
 Environment=PYTHONDONTWRITEBYTECODE=1
 LoadCredential=telegram_bot_token:/etc/rent-monitor/telegram_bot_token
 ExecStart=/opt/rent-monitor/current/.venv/bin/rent-monitor serve --config /opt/rent-monitor/current/config/search.toml
@@ -20,9 +24,9 @@ RestartSec=15s
 TimeoutStopSec=30s
 UMask=0077
 
-CPUQuota=50%
-MemoryMax=1G
-TasksMax=64
+CPUQuota=200%
+MemoryMax=4G
+TasksMax=512
 IOWeight=10
 
 ProtectSystem=strict
@@ -34,7 +38,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/rent-monitor
+ReadWritePaths=/var/lib/rent-monitor /run/rent-monitor-captcha/tokens
 
 StandardOutput=journal
 StandardError=journal
