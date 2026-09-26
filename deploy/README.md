@@ -4,6 +4,15 @@
 
 ## Установка релиза
 
+Перед первым browser-rollout остановите основной сервис, сохраните базу и путь текущего релиза. Файл `previous-release` нужен для быстрого атомарного отката:
+
+```sh
+sudo systemctl stop rent-monitor
+sudo cp --reflink=auto /var/lib/rent-monitor/rent-monitor.sqlite3 \
+  /var/lib/rent-monitor/rent-monitor.sqlite3.pre-browser
+readlink -f /opt/rent-monitor/current | sudo tee /opt/rent-monitor/previous-release
+```
+
 Сначала отправьте исходники в приватный репозиторий GitHub. На сервер переносите архив именно опубликованного commit. Распакуйте его в отдельный временный каталог и запустите установщик с SHA этого commit:
 
 ```sh
@@ -96,5 +105,31 @@ ss -ltn
 ```
 
 Основной сервис ограничен двумя CPU, 4 GiB памяти и 512 задачами. CAPTCHA-стек ограничен одним CPU, 1 GiB и 128 задачами. Оба локальных порта привязаны только к loopback; публичного VNC/noVNC listener нет. Каталоги и unit других проектов установщик не меняет.
+
+## Наблюдение и откат
+
+После обновления проверьте не менее пяти минутных циклов Avito, независимый цикл Яндекса, `/status`, отсутствие исторической рассылки и лимиты Chromium:
+
+```sh
+journalctl -u rent-monitor --since '-10 minutes'
+systemctl show rent-monitor -p MemoryCurrent -p TasksCurrent -p CPUQuotaPerSecUSec
+```
+
+Не включайте одновременно нидерландский или российский VPS с тем же Telegram-токеном. Сохраняйте старый release и backup базы минимум 72 часа. Для отката:
+
+```sh
+sudo systemctl stop rent-monitor rent-monitor-captcha
+previous="$(sudo cat /opt/rent-monitor/previous-release)"
+sudo test -f "$previous/.rent-monitor-release"
+sudo ln -sfn "$previous" /opt/rent-monitor/.rollback-current
+sudo mv -Tf /opt/rent-monitor/.rollback-current /opt/rent-monitor/current
+sudo install -o root -g root -m 0644 \
+  "$previous/deploy/systemd/rent-monitor.service" \
+  /etc/systemd/system/rent-monitor.service
+sudo systemctl daemon-reload
+sudo systemctl start rent-monitor
+```
+
+Базу не откатывайте без необходимости: новые таблицы и колонки аддитивны, а актуальные outbox и привязка Telegram должны сохраниться. Восстанавливайте `.pre-browser` только при подтверждённом повреждении SQLite и только после отдельной копии текущего файла.
 
 Перед обновлением сначала опубликуйте commit в GitHub, затем перенесите его архив на VPS и выполните установку из нового каталога. Старые release-каталоги установщик не удаляет, чтобы сохранить возможность ручного отката. Для полного удаления службы и данных сначала остановите её и удаляйте только перечисленные пути после проверки владельца.

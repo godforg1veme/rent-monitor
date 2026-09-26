@@ -73,7 +73,7 @@ Existing modules with bounded changes:
 - Produces: `CaptchaConfig(enabled: bool, public_base_url: str | None, token_directory: Path)`.
 - Produces: `RuntimeConfig.captcha: CaptchaConfig` and source-specific schedules used by Tasks 3, 4, 6, and 8.
 
-- [ ] **Step 1: Write failing configuration tests**
+- [x] **Step 1: Write failing configuration tests**
 
 ```python
 class ConfigTest(unittest.TestCase):
@@ -134,13 +134,13 @@ class ConfigTest(unittest.TestCase):
 
 Implement a private `_load_raw(raw: dict[str, object], base_path: Path)` helper so tests can parse TOML text without writing files; `load_config(path)` remains the public file entry point.
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 Run: `uv run --locked python -m unittest tests.unit.test_config -v`
 
 Expected: import or attribute failures for the new nested source types.
 
-- [ ] **Step 3: Implement nested source and CAPTCHA configuration**
+- [x] **Step 3: Implement nested source and CAPTCHA configuration**
 
 Use these dataclasses and validation bounds:
 
@@ -169,7 +169,7 @@ Require unique search names matching `[a-z0-9][a-z0-9_-]{0,47}`, HTTPS, host `av
 
 Replace the flat `[sources]` production section with the exact nested structure exercised by the test. Set Cian and Domclick `enabled = false`.
 
-- [ ] **Step 4: Add Playwright without installing browsers during package resolution**
+- [x] **Step 4: Add Playwright without installing browsers during package resolution**
 
 Add `playwright>=1.55,<2` to project dependencies and run:
 
@@ -180,7 +180,7 @@ uv sync --locked
 
 Browser binary installation remains a deployment/CI command (`playwright install chromium`), not a package import side effect.
 
-- [ ] **Step 5: Run configuration tests and the existing suite**
+- [x] **Step 5: Run configuration tests and the existing suite**
 
 Run:
 
@@ -192,7 +192,7 @@ uv run --locked ruff check .
 
 Expected: all tests pass; existing source-building tests use the new nested configuration.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/rent_monitor/config.py config/search.toml pyproject.toml uv.lock tests/unit/test_config.py
@@ -216,7 +216,7 @@ git commit -m "feat(config): add Avito search jobs"
 - Produces: `transition_source_state(previous, outcome, now, normal_interval_seconds) -> SourceTransition`.
 - Consumes later: Task 3 source runner and Task 7 alert generation.
 
-- [ ] **Step 1: Write table-driven failing state-policy tests**
+- [x] **Step 1: Write table-driven failing state-policy tests**
 
 ```python
 class SourceStatePolicyTest(unittest.TestCase):
@@ -271,13 +271,13 @@ class SourceStatePolicyTest(unittest.TestCase):
 
 Cover success recovery, first transport retry at 30 seconds, repeated transport delays `2/5/15/30/60` minutes, `Retry-After`, unrecognized structure at five minutes and block on the third occurrence.
 
-- [ ] **Step 2: Run the policy test and verify failure**
+- [x] **Step 2: Run the policy test and verify failure**
 
 Run: `uv run --locked python -m unittest tests.unit.test_source_state -v`
 
 Expected: module import failure.
 
-- [ ] **Step 3: Implement pure state types and transition policy**
+- [x] **Step 3: Implement pure state types and transition policy**
 
 Keep existing `SourceHealth` unchanged for collector compatibility. Add separate runtime types:
 
@@ -343,7 +343,7 @@ class SourceTransition:
 
 Use only UTC-aware datetimes. Clamp externally supplied retry delay to six hours.
 
-- [ ] **Step 4: Add an additive `source_runtime` table and repository methods**
+- [x] **Step 4: Add an additive `source_runtime` table and repository methods**
 
 Add this table without changing the existing checked `source_status` table:
 
@@ -373,7 +373,7 @@ async def list_source_run_states(self) -> list[SourceRunState]
 
 When no row exists, `get_source_run_state` returns `SourceRunState.initial(source)` without writing.
 
-- [ ] **Step 5: Test persistence across repository restart**
+- [x] **Step 5: Test persistence across repository restart**
 
 Use a temporary on-disk SQLite file, save a cooldown state, close/reopen the repository, and assert every timestamp and counter survives.
 
@@ -381,7 +381,7 @@ Run: `uv run --locked python -m unittest tests.unit.test_source_state tests.e2e.
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/rent_monitor/core/source_state.py src/rent_monitor/core/models.py src/rent_monitor/storage/sqlite.py tests/unit/test_source_state.py tests/e2e/test_monitor_pipeline.py
@@ -405,7 +405,7 @@ git commit -m "feat(core): persist source runtime state"
 - Produces: `run_collectors(runtimes, criteria, repository, stop_event, state_changed, on_transition)` that starts one task per source.
 - Retains: `process_collection_result()` and `run_outbox_worker()` behavior.
 
-- [ ] **Step 1: Write failing concurrency and persisted-wait tests**
+- [x] **Step 1: Write failing concurrency and persisted-wait tests**
 
 ```python
 class SourceRunnerTest(unittest.IsolatedAsyncioTestCase):
@@ -430,13 +430,13 @@ class SourceRunnerTest(unittest.IsolatedAsyncioTestCase):
 
 Inject `clock`, `sleep`, and `jitter` callables into the runner as keyword-only test seams rather than using real minute-long waits.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `uv run --locked python -m unittest tests.unit.test_source_runner -v`
 
 Expected: missing runner interfaces.
 
-- [ ] **Step 3: Refactor scheduling without changing collection processing**
+- [x] **Step 3: Refactor scheduling without changing collection processing**
 
 Define:
 
@@ -453,13 +453,13 @@ Each runner loads persisted runtime state before an attempt, waits until `next_a
 
 Do not use the old slot calculation. Keep `BoundedHttpClient` serialization for HTTP collectors; the browser transport has its own lock.
 
-- [ ] **Step 4: Wire independent tasks in `main.py`**
+- [x] **Step 4: Wire independent tasks in `main.py`**
 
 Build Yandex as an HTTP runtime. Leave Avito temporarily on its existing collector/client until Task 6 swaps the client. Do not construct disabled Cian or Domclick collectors.
 
 Use one `asyncio.TaskGroup` child for each source runner, one for Telegram polling, and one for outbox delivery. A collector exception is converted to a failure outcome inside its runner and must not escape the task group.
 
-- [ ] **Step 5: Run focused and full tests**
+- [x] **Step 5: Run focused and full tests**
 
 Run:
 
@@ -471,7 +471,7 @@ uv run --locked ruff check .
 
 Expected: pass, including an assertion that Avito and Yandex call timestamps are independent.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/rent_monitor/core/scheduler.py src/rent_monitor/main.py src/rent_monitor/collectors/__init__.py tests/unit/test_source_runner.py tests/e2e/test_monitor_pipeline.py
@@ -510,7 +510,7 @@ Test modules define `ok_page(html, url=SEARCH_URL)` and `forbidden_page(url=SEAR
 construct `BrowserPage` with deterministic UTC observation times. Production code remains
 source-neutral.
 
-- [ ] **Step 1: Write a failing real-browser integration test**
+- [x] **Step 1: Write a failing real-browser integration test**
 
 Start an `asyncio` loopback HTTP server that serves `/search` and records the `Cookie` header. The first response sets `rm_test=present`; the second renders the received cookie in the body.
 
@@ -530,7 +530,7 @@ class BrowserTransportTest(unittest.IsolatedAsyncioTestCase):
 
 Also assert that two concurrent `fetch` calls are serialized and that HTML is returned but no file is created outside the profile directory.
 
-- [ ] **Step 2: Install Chromium locally and verify the test fails**
+- [x] **Step 2: Install Chromium locally and verify the test fails**
 
 Run:
 
@@ -541,7 +541,7 @@ uv run --locked python -m unittest tests.integration.test_browser_transport -v
 
 Expected: module import failure.
 
-- [ ] **Step 3: Implement the browser lifecycle**
+- [x] **Step 3: Implement the browser lifecycle**
 
 Use Playwright's async API and dedicated profile:
 
@@ -559,7 +559,7 @@ Do not pass a custom user agent or stealth arguments. Set navigation timeout, us
 
 Never enable trace, video, HAR, or downloads. Capture a PNG only when `screenshot()` is explicitly called.
 
-- [ ] **Step 4: Add one CI browser job**
+- [x] **Step 4: Add one CI browser job**
 
 Keep the existing Python-version matrix. Add a separate Ubuntu/Python 3.12 job that runs:
 
@@ -569,7 +569,7 @@ Keep the existing Python-version matrix. Add a separate Ubuntu/Python 3.12 job t
 - run: uv run --locked python -m unittest tests.integration.test_browser_transport -v
 ```
 
-- [ ] **Step 5: Run browser, E2E, lint, and format checks**
+- [x] **Step 5: Run browser, E2E, lint, and format checks**
 
 Run:
 
@@ -582,7 +582,7 @@ uv run --locked ruff format --check .
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/rent_monitor/browser .github/workflows/ci.yml tests/integration/test_browser_transport.py
@@ -605,7 +605,7 @@ git commit -m "feat(browser): add persistent Playwright transport"
 - Produces: `AvitoSearchContext(recognized, city, long_term, no_commission, newest_first)`.
 - Extends: `parse_search_page(html, base_url, *, expected_city="Москва")` to return verified context with candidates.
 
-- [ ] **Step 1: Add failing parser cases for filter-derived commission**
+- [x] **Step 1: Add failing parser cases for filter-derived commission**
 
 ```python
 def test_verified_no_commission_filter_supplies_missing_card_value(self) -> None:
@@ -653,13 +653,13 @@ def test_machine_timestamp_and_relative_timestamp_are_normalized(self) -> None:
 
 Fixtures must mark the primary result container and selected filters separately; recommendation cards outside the primary container are ignored.
 
-- [ ] **Step 2: Run the Avito tests and verify failure**
+- [x] **Step 2: Run the Avito tests and verify failure**
 
 Run: `uv run --locked python -m unittest tests.e2e.test_avito_pipeline -v`
 
 Expected: missing evidence/context types or wrong unknown commission result.
 
-- [ ] **Step 3: Implement evidence-aware parsing**
+- [x] **Step 3: Implement evidence-aware parsing**
 
 Require all of these signals before `no_commission=True`:
 
@@ -675,7 +675,7 @@ input used. Extend `SearchPageParse` with an optional `context` field so other p
 source-compatible. Parse ISO-8601 publication timestamps first; accept Russian relative minute/hour
 labels only when `observed_at` is supplied, and leave all other publication labels unknown.
 
-- [ ] **Step 4: Add an additive evidence column migration**
+- [x] **Step 4: Add an additive evidence column migration**
 
 During repository initialization, inspect `PRAGMA table_info(listings)`. Add every absent evidence
 column independently:
@@ -688,7 +688,7 @@ ALTER TABLE listings ADD COLUMN commission_evidence TEXT NOT NULL DEFAULT 'unkno
 
 Read/write the enum through `_listing_values` and `_listing_from_row`. Existing production rows become `unknown` without changing identity, baseline, or outbox rows.
 
-- [ ] **Step 5: Run parser, pipeline, and migration tests**
+- [x] **Step 5: Run parser, pipeline, and migration tests**
 
 Run:
 
@@ -700,7 +700,7 @@ uv run --locked ruff check .
 
 Expected: the previously unknown-fee fixture is accepted only on a fully verified filtered search page.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/rent_monitor/core/models.py src/rent_monitor/parsers/avito.py src/rent_monitor/storage/sqlite.py tests/e2e/test_avito_pipeline.py
@@ -723,7 +723,7 @@ git commit -m "feat(avito): verify filter-derived commission"
 - Produces: `AvitoCollector(searches: tuple[AvitoSearchConfig, ...])` with `source = "avito"` and `interval_seconds = min(search.poll_interval_seconds)`.
 - Produces: one union `CollectionResult` per due cycle; first call loads every configured job so baseline seeding is complete.
 
-- [ ] **Step 1: Write failing browser-collector tests**
+- [x] **Step 1: Write failing browser-collector tests**
 
 ```python
 class AvitoCollectorTest(unittest.IsolatedAsyncioTestCase):
@@ -750,13 +750,13 @@ class AvitoCollectorTest(unittest.IsolatedAsyncioTestCase):
 
 Also cover 403, 429 with `Retry-After`, browser exception, unknown structure, and a successful second call after a temporary error. Assert there is no `_paused_reason` latch.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `uv run --locked python -m unittest tests.unit.test_avito_collector -v`
 
 Expected: constructor or BrowserPage interface failure.
 
-- [ ] **Step 3: Replace the constant URL and permanent pause**
+- [x] **Step 3: Replace the constant URL and permanent pause**
 
 Remove `SEARCH_URL` from production code and remove `_paused_reason`. The collector loops through configured jobs sequentially, awaits one browser fetch at a time, validates each final URL, parses it, and unions candidates by source ID while preserving configuration order.
 
@@ -764,7 +764,7 @@ On the first call, every job is due. On later calls, track each job's monotonic 
 
 CAPTCHA or access restriction aborts the remaining jobs immediately. A normal job error returns a source failure so Task 2 controls retries. Do not perform a direct detail-page request before notification.
 
-- [ ] **Step 4: Wire BrowserTransport in application lifecycle**
+- [x] **Step 4: Wire BrowserTransport in application lifecycle**
 
 Resolve the browser profile under the state directory:
 
@@ -776,11 +776,11 @@ await browser.start()
 
 Create the Avito runtime with the browser client and minimum configured interval. Build Yandex with `BoundedHttpClient`. Close the browser in `finally` after runners stop.
 
-- [ ] **Step 5: Preserve first-deployment baseline behavior**
+- [x] **Step 5: Preserve first-deployment baseline behavior**
 
 Add an on-disk repository test that starts with the existing `avito` baseline and baseline candidates, runs the browser-backed collector, and confirms no old listing notification is created. Keep `CollectionResult.source == "avito"`, so existing baseline keys remain valid.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Run:
 
@@ -815,7 +815,7 @@ git commit -m "feat(avito): collect through persistent Chromium"
 - Extends notifier with `send_source_alert(chat_id, alert)`.
 - Consumes: Task 2 `SourceTransition` from Task 3 runner.
 
-- [ ] **Step 1: Write failing durable alert tests**
+- [x] **Step 1: Write failing durable alert tests**
 
 ```python
 class SourceAlertTest(unittest.IsolatedAsyncioTestCase):
@@ -836,7 +836,7 @@ class SourceAlertTest(unittest.IsolatedAsyncioTestCase):
 
 Advance the injected repository clock past retry delay and assert the alert is claimable again. Add a recovery alert test with exact outage duration.
 
-- [ ] **Step 2: Add the source alert table**
+- [x] **Step 2: Add the source alert table**
 
 ```sql
 CREATE TABLE IF NOT EXISTS source_alert_outbox (
@@ -860,7 +860,7 @@ CREATE TABLE IF NOT EXISTS source_alert_outbox (
 
 Build `event_key` from source plus transition timestamp plus target health. Use the same five-minute claim lease and bounded retry schedule as listing notifications.
 
-- [ ] **Step 3: Generate alerts only for meaningful transitions**
+- [x] **Step 3: Generate alerts only for meaningful transitions**
 
 The runner calls `enqueue_source_transition` for:
 
@@ -870,7 +870,7 @@ The runner calls `enqueue_source_transition` for:
 
 Do not alert for `starting -> healthy` or the first transient transport failure.
 
-- [ ] **Step 4: Deliver and format source alerts**
+- [x] **Step 4: Deliver and format source alerts**
 
 Extend `deliver_outbox_once` to drain listing notifications first, then source alerts, without allowing failure in one queue to skip the other. Add `TelegramNotifier.send_source_alert` with Russian messages and Moscow-local timestamps.
 
@@ -880,7 +880,7 @@ compatibility fallback to old `source_status` rows during migration. When an out
 delivered, log numeric `first_seen_to_delivered_seconds`; when reliable `published_at` exists, also
 log `published_to_first_seen_seconds` without logging listing text or URL.
 
-- [ ] **Step 5: Run alert and E2E tests**
+- [x] **Step 5: Run alert and E2E tests**
 
 Run:
 
@@ -892,7 +892,7 @@ uv run --locked ruff check .
 
 Expected: one transition alert, durable retry, one recovery alert, and no duplicate after repository restart.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/rent_monitor/core/models.py src/rent_monitor/storage/sqlite.py src/rent_monitor/core/scheduler.py src/rent_monitor/telegram/bot.py tests/unit/test_source_alerts.py tests/e2e/test_monitor_pipeline.py
@@ -919,7 +919,7 @@ git commit -m "feat(alerts): notify source health transitions"
   performs one inspection, persists success only for a recognized non-CAPTCHA page, and enqueues one
   recovery transition.
 
-- [ ] **Step 1: Write failing token lifecycle tests**
+- [x] **Step 1: Write failing token lifecycle tests**
 
 ```python
 class CaptchaSessionTest(unittest.IsolatedAsyncioTestCase):
@@ -946,7 +946,7 @@ class CaptchaSessionTest(unittest.IsolatedAsyncioTestCase):
 
 Assert generated token filenames contain only URL-safe random characters, mode `0600`, and no source name or chat ID.
 
-- [ ] **Step 2: Implement token files compatible with websockify `TokenFileName`**
+- [x] **Step 2: Implement token files compatible with websockify `TokenFileName`**
 
 Create the directory with mode `0700`. Write each token file atomically with contents `127.0.0.1:5900\n`, then chmod `0600`. Build the URL as:
 
@@ -967,13 +967,13 @@ Maintain expiry in memory and remove every stale token at startup. Use noVNC's l
 does not expose the full application's clipboard panel or file controls. Tailscale is the network
 access boundary; the random token is an additional single-session gate.
 
-- [ ] **Step 3: Add owner-only Telegram callbacks**
+- [x] **Step 3: Add owner-only Telegram callbacks**
 
 Source-alert messages for `manual_attention/captcha` include callback buttons, not an already-expiring URL. On `captcha:open:avito`, verify the bound private chat and current state, issue a session, call `browser.screenshot()`, optionally send the PNG from memory, then send a URL button valid for 15 minutes.
 
 On `captcha:check:avito`, trigger exactly one controlled browser inspection. If the expected search context is recognized, apply a successful state transition, expire the token, wake the source runner, and enqueue recovery. If CAPTCHA remains, keep `manual_attention` and answer without starting the schedule.
 
-- [ ] **Step 4: Test unauthorized, expired, failed, and successful flows**
+- [x] **Step 4: Test unauthorized, expired, failed, and successful flows**
 
 Use fake callback queries and a fake browser. Assert an unbound chat receives no link, expired tokens are removed, remaining CAPTCHA never resumes, and recognized search resumes exactly once.
 
@@ -985,7 +985,7 @@ uv run --locked python -m unittest discover -s tests/e2e -v
 uv run --locked ruff check .
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/rent_monitor/browser/captcha.py src/rent_monitor/telegram/bot.py src/rent_monitor/main.py src/rent_monitor/core/scheduler.py tests/unit/test_captcha.py
@@ -1023,7 +1023,7 @@ test "$(stat -c %a /run/rent-monitor-captcha/tokens)" = "700"
 
 Run the checks manually before creating the unit and record the expected initial failure in the deployment notes.
 
-- [ ] **Step 2: Implement the supervised support stack**
+- [x] **Step 2: Implement the supervised support stack**
 
 `run-captcha-stack.sh` starts:
 
@@ -1038,7 +1038,7 @@ Use `trap` to terminate all children and `wait -n` so failure of any child termi
 
 The support unit runs as `rent-monitor`, creates `RuntimeDirectory=rent-monitor-captcha` with mode `0700`, restarts on failure, and uses the same hardening baseline as the main service. It does not receive Telegram credentials.
 
-- [ ] **Step 3: Update the main service**
+- [x] **Step 3: Update the main service**
 
 Add:
 
@@ -1054,7 +1054,7 @@ TasksMax=512
 
 Keep `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, and `NoNewPrivileges=true`. Allow read/write access to the state directory and CAPTCHA token directory only.
 
-- [ ] **Step 4: Update installation**
+- [x] **Step 4: Update installation**
 
 Install distribution packages `xvfb`, `x11vnc`, `novnc`, `websockify`, and Tailscale from its official repository. After `uv sync --locked`, install Playwright Chromium and OS dependencies:
 
@@ -1090,7 +1090,7 @@ ss -ltn
 
 Expected: ports 5900 and 6080 are bound only to `127.0.0.1`; there is no public VNC/noVNC listener; the main service is allowed two CPU equivalents, 4 GiB, and 512 tasks.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add deploy/run-captcha-stack.sh deploy/systemd/rent-monitor-captcha.service deploy/systemd/rent-monitor.service deploy/install.sh deploy/README.md
@@ -1112,7 +1112,7 @@ git commit -m "feat(deploy): add private browser control stack"
 - Validates every acceptance criterion from the design.
 - Produces an operator checklist for German-VPS deployment and rollback.
 
-- [ ] **Step 1: Add the final E2E scenarios**
+- [x] **Step 1: Add the final E2E scenarios**
 
 Create these concrete scenarios using the `FakeBrowserTransport`, `FakeTelegramSender`,
 `run_one_runner_tick`, and fixture builders already introduced by earlier tasks:
@@ -1191,7 +1191,7 @@ Define the named helpers locally in the test modules with no sleeps longer than 
 cases use a temporary on-disk SQLite database; all other cases use SQLite in memory. No test accesses
 Avito.
 
-- [ ] **Step 2: Run the full local verification suite**
+- [x] **Step 2: Run the full local verification suite**
 
 Run:
 
@@ -1207,7 +1207,7 @@ git diff --check
 
 Expected: all tests and static checks pass.
 
-- [ ] **Step 3: Document operator behavior**
+- [x] **Step 3: Document operator behavior**
 
 README must state:
 
@@ -1252,7 +1252,7 @@ If a CAPTCHA is naturally present, complete the iPhone flow. If not, use the loc
 
 Monitor transition alerts, successful polls, card counts, detection-to-outbox timing, and Chromium restarts. Roll back if the browser repeatedly enters blocked/manual-attention, baseline behavior is wrong, or the service breaches its memory/task limits. Do not activate the Netherlands or Russian VPS concurrently.
 
-- [ ] **Step 7: Commit final documentation and test coverage**
+- [x] **Step 7: Commit final documentation and test coverage**
 
 ```powershell
 git add README.md deploy/README.md tests/e2e/test_avito_pipeline.py tests/e2e/test_monitor_pipeline.py docs/superpowers/plans/2026-09-26-avito-browser-monitor.md

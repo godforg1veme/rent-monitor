@@ -17,7 +17,13 @@ from rent_monitor.core.models import (
     SearchCriteria,
     SourceHealth,
 )
-from rent_monitor.core.scheduler import deliver_outbox_once, process_collection_result
+from rent_monitor.core.scheduler import (
+    CollectorRuntime,
+    deliver_outbox_once,
+    process_collection_result,
+    run_source_once,
+)
+from rent_monitor.core.source_state import SourceRunHealth, SourceRunState
 from rent_monitor.parsers.avito import parse_search_page
 from rent_monitor.storage.sqlite import SQLiteRepository
 
@@ -112,6 +118,48 @@ class FakeTelegramSender:
 
 
 class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
+    async def test_single_403_schedules_recovery_instead_of_permanent_pause(self) -> None:
+        repository = SQLiteRepository(":memory:")
+        await repository.initialize()
+        browser = FixtureBrowser([(403, "")])
+        collector = AvitoCollector((SEARCH,))
+
+        await run_source_once(
+            CollectorRuntime(collector, browser, 60, jitter_seconds=0),
+            SearchCriteria("Москва", 2, 70_000, True),
+            repository,
+            now=lambda: datetime(2026, 9, 26, 12, 0, tzinfo=UTC),
+        )
+        state = await repository.get_source_run_state("avito")
+        await repository.close()
+
+        self.assertEqual(state.health, SourceRunHealth.COOLDOWN)
+        self.assertIsNotNone(state.next_attempt_at)
+        self.assertEqual(browser.requests, 1)
+
+    async def test_captcha_state_stops_navigation_across_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "restart.sqlite3"
+            repository = SQLiteRepository(path)
+            await repository.initialize()
+            await repository.save_source_run_state(
+                SourceRunState.manual_attention("avito", "captcha")
+            )
+            await repository.close()
+
+            repository = SQLiteRepository(path)
+            await repository.initialize()
+            browser = FixtureBrowser([search_page(card("1111111111"))])
+            transition = await run_source_once(
+                CollectorRuntime(AvitoCollector((SEARCH,)), browser, 60),
+                SearchCriteria("Москва", 2, 70_000, True),
+                repository,
+            )
+            await repository.close()
+
+        self.assertIsNone(transition)
+        self.assertEqual(browser.requests, 0)
+
     async def test_existing_avito_baseline_survives_browser_collector_upgrade(self) -> None:
         criteria = SearchCriteria("Москва", 2, 70_000, True)
         source_id = "1111111111"
