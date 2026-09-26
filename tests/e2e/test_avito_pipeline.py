@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 
 from rent_monitor.collectors.avito import SEARCH_URL, AvitoCollector
-from rent_monitor.core.models import SearchCriteria, SourceHealth
+from rent_monitor.core.models import (
+    CommissionStatus,
+    FieldEvidence,
+    SearchCriteria,
+    SourceHealth,
+)
 from rent_monitor.core.scheduler import deliver_outbox_once, process_collection_result
 from rent_monitor.parsers.avito import parse_search_page
 from rent_monitor.storage.sqlite import SQLiteRepository
@@ -23,8 +32,14 @@ def card(
     title: str = "2-к. квартира, 48 м², 3/9 эт.",
     path: str | None = None,
     description: str = "Не сохранять описание карточки или контакты продавца.",
+    published: str | None = None,
 ) -> str:
     href = path or f"/moskva/kvartiry/sdam/2-komnatnye/{source_id}"
+    published_html = (
+        f'<time data-marker="item-date" datetime="{published}">{published}</time>'
+        if published
+        else ""
+    )
     return f"""
     <div data-marker="item" data-item-id="{source_id}">
       <a data-marker="item-title" href="{href}">{title}</a>
@@ -34,17 +49,29 @@ def card(
       <div data-marker="item-specific-params">{details}</div>
       <a data-marker="item-address" href="#address">ул. Тестовая</a>
       <div data-marker="item-location">Новые Черёмушки ,  6–10 мин.</div>
+      {published_html}
       <div data-marker="item-description">{description}</div>
     </div>
     """
 
 
-def search_page(*cards: str) -> str:
+def search_page(
+    *cards: str,
+    heading: str = "Аренда квартир на длительный срок в Москве без комиссии",
+    selected_filters: tuple[str, ...] = (),
+    recommendations: str = "",
+) -> str:
+    filters = "".join(
+        f'<button data-marker="filter-active" aria-pressed="true">{value}</button>'
+        for value in selected_filters
+    )
     return f"""
     <!doctype html><html lang="ru"><head><title>Avito</title>
     <script>const captchaScript = 'captcha';</script></head><body>
-    <h1>Аренда квартир на длительный срок в Москве без комиссии</h1>
+    <h1>{heading}</h1>
+    <nav>{filters}</nav>
     <main data-marker="catalog-serp">{"".join(cards)}</main>
+    <aside data-marker="recommendations">{recommendations}</aside>
     </body></html>
     """
 
@@ -86,6 +113,40 @@ class FakeTelegramSender:
 
 
 class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_database_adds_evidence_columns_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE listings (
+                    source TEXT NOT NULL, source_id TEXT NOT NULL, group_id TEXT NOT NULL,
+                    url TEXT NOT NULL, price_rub INTEGER, title TEXT, address TEXT,
+                    address_norm TEXT, rooms INTEGER, area_m2 REAL, metro TEXT,
+                    metro_minutes INTEGER, seller_type TEXT NOT NULL,
+                    commission_status TEXT NOT NULL, commission_value INTEGER,
+                    commission_unit TEXT, published_at TEXT, first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL, PRIMARY KEY (source, source_id)
+                );
+                """
+            )
+            connection.close()
+
+            repository = SQLiteRepository(path)
+            await repository.initialize()
+            await repository.close()
+
+            connection = sqlite3.connect(path)
+            columns = {
+                row[1]: row[4]
+                for row in connection.execute("PRAGMA table_info(listings)").fetchall()
+            }
+            connection.close()
+
+        self.assertEqual(columns["price_evidence"], "'unknown'")
+        self.assertEqual(columns["rooms_evidence"], "'unknown'")
+        self.assertEqual(columns["commission_evidence"], "'unknown'")
+
     async def test_new_matching_listing_reaches_telegram_once(self) -> None:
         criteria = SearchCriteria(
             city="Москва",
@@ -140,6 +201,10 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(notification.listing.source_id, matching_id)
                 self.assertEqual(notification.listing.price_rub, 70_000)
                 self.assertEqual(notification.listing.commission_status, "none")
+                self.assertEqual(
+                    notification.listing.commission_evidence,
+                    FieldEvidence.EXPLICIT_CARD,
+                )
                 self.assertNotIn("описание карточки", str(notification.listing))
 
                 duplicate = await collector.collect(criteria, client)
@@ -179,6 +244,75 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
 
 
 class AvitoParserTest(unittest.TestCase):
+    def test_verified_no_commission_filter_supplies_missing_card_value(self) -> None:
+        parsed = parse_search_page(
+            search_page(
+                card("5555555555", details="Залог 60 000 ₽ · ЖКУ включены"),
+                selected_filters=("Без комиссии", "Сначала новые"),
+            ),
+            SEARCH_URL,
+        )
+
+        candidate = parsed.candidates[0]
+        self.assertEqual(candidate.commission_status, CommissionStatus.NONE)
+        self.assertEqual(candidate.commission_evidence, FieldEvidence.VERIFIED_FILTER)
+        self.assertTrue(parsed.context.no_commission)
+        self.assertTrue(parsed.context.newest_first)
+
+    def test_url_without_visible_filter_does_not_supply_commission(self) -> None:
+        parsed = parse_search_page(
+            search_page(
+                card("5555555555", details="Залог 60 000 ₽"),
+                heading="Квартиры",
+            ),
+            SEARCH_URL,
+        )
+
+        self.assertEqual(parsed.candidates[0].commission_status, CommissionStatus.UNKNOWN)
+        self.assertEqual(parsed.candidates[0].commission_evidence, FieldEvidence.UNKNOWN)
+
+    def test_explicit_positive_commission_overrides_filter(self) -> None:
+        parsed = parse_search_page(
+            search_page(
+                card("5555555555", details="Комиссия 50%"),
+                selected_filters=("Без комиссии", "Сначала новые"),
+            ),
+            SEARCH_URL,
+        )
+
+        self.assertEqual(parsed.candidates[0].commission_status, CommissionStatus.POSITIVE)
+        self.assertEqual(parsed.candidates[0].commission_evidence, FieldEvidence.EXPLICIT_CARD)
+
+    def test_machine_timestamp_and_relative_timestamp_are_normalized(self) -> None:
+        observed_at = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
+        exact = parse_search_page(
+            search_page(card("6666666666", published="2026-09-26T11:58:00+00:00")),
+            SEARCH_URL,
+            observed_at=observed_at,
+        )
+        relative = parse_search_page(
+            search_page(card("7777777777", published="5 минут назад")),
+            SEARCH_URL,
+            observed_at=observed_at,
+        )
+
+        self.assertEqual(
+            exact.candidates[0].published_at,
+            datetime(2026, 9, 26, 11, 58, tzinfo=UTC),
+        )
+        self.assertEqual(relative.candidates[0].published_at, observed_at - timedelta(minutes=5))
+
+    def test_recommendation_cards_outside_primary_results_are_ignored(self) -> None:
+        parsed = parse_search_page(
+            search_page(
+                card("6666666666"),
+                recommendations=card("7777777777"),
+            ),
+            SEARCH_URL,
+        )
+
+        self.assertEqual([item.source_id for item in parsed.candidates], ["6666666666"])
+
     def test_visible_card_fields_parse_without_reading_description_or_script(self) -> None:
         listing_id = "6666666666"
         parsed = parse_search_page(

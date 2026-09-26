@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from rent_monitor.core.models import (
     Candidate,
     CommissionStatus,
+    FieldEvidence,
     SearchPageParse,
     SellerType,
 )
@@ -26,6 +28,7 @@ _FIELD_BY_MARKER = {
     "item-specific-params": "specific_params",
     "item-address": "address",
     "item-location": "location",
+    "item-date": "published_label",
 }
 _EMPTY_MARKERS = (
     "ничего не найдено",
@@ -52,6 +55,16 @@ class _RawCard:
     source_id: str | None
     href: str | None = None
     values: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    published_machine: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AvitoSearchContext:
+    recognized: bool
+    city: str | None
+    long_term: bool
+    no_commission: bool
+    newest_first: bool
 
 
 @dataclass(slots=True)
@@ -60,6 +73,8 @@ class _Frame:
     field_name: str | None = None
     starts_card: bool = False
     hides_text: bool = False
+    starts_primary: bool = False
+    page_field_name: str | None = None
 
 
 class _AvitoCardReader(HTMLParser):
@@ -75,11 +90,21 @@ class _AvitoCardReader(HTMLParser):
         self.outside_text: list[str] = []
         self.outside_text_length = 0
         self.invalid_structure = False
+        self.primary_depth = 0
+        self.primary_seen = False
+        self.page_values: dict[str, list[str]] = defaultdict(list)
+        self.active_page_fields: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key.lower(): value for key, value in attrs}
         marker = attr_map.get("data-marker")
-        starts_card = marker == "item" and self.hidden_depth == 0
+        starts_primary = marker == "catalog-serp" and self.hidden_depth == 0
+        if starts_primary:
+            if self.primary_depth:
+                self.invalid_structure = True
+            self.primary_depth += 1
+            self.primary_seen = True
+        starts_card = marker == "item" and self.hidden_depth == 0 and self.primary_depth > 0
         if starts_card:
             if self.current_card is not None:
                 self.invalid_structure = True
@@ -94,6 +119,17 @@ class _AvitoCardReader(HTMLParser):
                 if href and self.current_card.href is None:
                     self.current_card.href = href.strip()
             self.active_fields.append(field_name)
+            if field_name == "published_label" and attr_map.get("datetime"):
+                self.current_card.published_machine = attr_map["datetime"].strip()
+
+        page_field_name = None
+        if self.current_card is None and self.hidden_depth == 0:
+            if tag.lower() == "h1":
+                page_field_name = "heading"
+            elif marker == "filter-active" and attr_map.get("aria-pressed") != "false":
+                page_field_name = "selected_filter"
+            if page_field_name:
+                self.active_page_fields.append(page_field_name)
 
         hides_text = tag.lower() in {"script", "style", "noscript"}
         self.frames.append(
@@ -102,6 +138,8 @@ class _AvitoCardReader(HTMLParser):
                 field_name=field_name if field_name and self.hidden_depth == 0 else None,
                 starts_card=starts_card and self.current_card is not None,
                 hides_text=hides_text,
+                starts_primary=starts_primary,
+                page_field_name=page_field_name,
             )
         )
         if hides_text:
@@ -132,6 +170,11 @@ class _AvitoCardReader(HTMLParser):
                     if self.active_fields[index] == frame.field_name:
                         del self.active_fields[index]
                         break
+            if frame.page_field_name:
+                for index in range(len(self.active_page_fields) - 1, -1, -1):
+                    if self.active_page_fields[index] == frame.page_field_name:
+                        del self.active_page_fields[index]
+                        break
             if frame.starts_card:
                 if self.current_card is None:
                     self.invalid_structure = True
@@ -140,6 +183,8 @@ class _AvitoCardReader(HTMLParser):
                     self.current_card = None
             if frame.hides_text:
                 self.hidden_depth = max(0, self.hidden_depth - 1)
+            if frame.starts_primary:
+                self.primary_depth = max(0, self.primary_depth - 1)
 
     def handle_data(self, data: str) -> None:
         if self.hidden_depth or not data:
@@ -147,9 +192,12 @@ class _AvitoCardReader(HTMLParser):
         if self.current_card is not None:
             for field_name in dict.fromkeys(self.active_fields):
                 self.current_card.values[field_name].append(data)
-        elif self.outside_text_length < 20_000:
-            self.outside_text.append(data)
-            self.outside_text_length += len(data)
+        else:
+            for field_name in dict.fromkeys(self.active_page_fields):
+                self.page_values[field_name].append(data)
+            if self.outside_text_length < 20_000:
+                self.outside_text.append(data)
+                self.outside_text_length += len(data)
 
     def close(self) -> None:
         super().close()
@@ -243,6 +291,31 @@ def _commission(text: str | None) -> tuple[CommissionStatus, int | None, str | N
     return CommissionStatus.POSITIVE, int(amount) if amount.is_integer() else None, unit
 
 
+def _published_at(
+    machine_value: str | None,
+    visible_value: str | None,
+    observed_at: datetime | None,
+) -> datetime | None:
+    if machine_value:
+        try:
+            value = datetime.fromisoformat(machine_value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if observed_at is None or not visible_value:
+        return None
+    normalized = visible_value.casefold().replace("ё", "е")
+    match = re.fullmatch(r"\s*(\d+)\s+(минут\w*|час\w*)\s+назад\s*", normalized)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    delta = (
+        timedelta(minutes=amount) if match.group(2).startswith("минут") else timedelta(hours=amount)
+    )
+    return observed_at - delta
+
+
 def _metro(location: str | None) -> tuple[str | None, int | None]:
     if not location:
         return None, None
@@ -286,7 +359,13 @@ def _listing_url(raw_href: str | None, base_url: str, source_id: str) -> tuple[s
     return canonical, True
 
 
-def _candidate(card: _RawCard, base_url: str) -> tuple[Candidate | None, bool]:
+def _candidate(
+    card: _RawCard,
+    base_url: str,
+    *,
+    verified_no_commission: bool,
+    observed_at: datetime | None,
+) -> tuple[Candidate | None, bool]:
     source_id = card.source_id or ""
     if not re.fullmatch(r"\d{7,}", source_id):
         return None, False
@@ -301,6 +380,15 @@ def _candidate(card: _RawCard, base_url: str) -> tuple[Candidate | None, bool]:
     title = _field(card, "title")
     price = _integer(_field(card, "price_value"))
     status, commission_value, commission_unit = _commission(_field(card, "specific_params"))
+    commission_evidence = (
+        FieldEvidence.EXPLICIT_CARD
+        if status is not CommissionStatus.UNKNOWN
+        else FieldEvidence.UNKNOWN
+    )
+    if status is CommissionStatus.UNKNOWN and verified_no_commission:
+        status = CommissionStatus.NONE
+        commission_value = 0
+        commission_evidence = FieldEvidence.VERIFIED_FILTER
     metro, metro_minutes = _metro(_field(card, "location"))
     return (
         Candidate(
@@ -318,13 +406,30 @@ def _candidate(card: _RawCard, base_url: str) -> tuple[Candidate | None, bool]:
             commission_status=status,
             commission_value=commission_value,
             commission_unit=commission_unit,
-            published_at=None,
+            published_at=_published_at(
+                card.published_machine,
+                _field(card, "published_label"),
+                observed_at,
+            ),
+            price_evidence=(
+                FieldEvidence.EXPLICIT_CARD if price is not None else FieldEvidence.UNKNOWN
+            ),
+            rooms_evidence=(
+                FieldEvidence.EXPLICIT_CARD if _rooms(title) is not None else FieldEvidence.UNKNOWN
+            ),
+            commission_evidence=commission_evidence,
         ),
         True,
     )
 
 
-def parse_search_page(html: str, base_url: str) -> SearchPageParse:
+def parse_search_page(
+    html: str,
+    base_url: str,
+    *,
+    expected_city: str = "Москва",
+    observed_at: datetime | None = None,
+) -> SearchPageParse:
     """Parse explicitly marked listing cards from Avito's public search HTML."""
     try:
         base_parts = urlsplit(base_url)
@@ -362,20 +467,46 @@ def parse_search_page(html: str, base_url: str) -> SearchPageParse:
         )
     if reader.invalid_structure:
         return SearchPageParse(recognized=False, candidates=[])
+
+    heading = _clean(reader.page_values.get("heading", []))
+    selected_filters = [
+        value.casefold().replace("ё", "е")
+        for value in reader.page_values.get("selected_filter", [])
+        if value.strip()
+    ]
+    normalized_heading = (heading or "").casefold().replace("ё", "е")
+    normalized_city = expected_city.casefold().replace("ё", "е")
+    context = AvitoSearchContext(
+        recognized=reader.primary_seen and normalized_city in normalized_heading,
+        city=expected_city if normalized_city in normalized_heading else None,
+        long_term="длительн" in normalized_heading,
+        no_commission=(
+            base_parts.path.startswith(_SEARCH_PATH_PREFIX)
+            and "без комисси" in normalized_heading
+            and any("без комисси" in value for value in selected_filters)
+            and reader.primary_seen
+        ),
+        newest_first=any("сначала новые" in value for value in selected_filters),
+    )
     if not reader.cards:
         lowered = outside_text.casefold()
         if any(marker in lowered for marker in _EMPTY_MARKERS):
-            return SearchPageParse(recognized=True, candidates=[])
-        return SearchPageParse(recognized=False, candidates=[])
+            return SearchPageParse(recognized=True, candidates=[], context=context)
+        return SearchPageParse(recognized=False, candidates=[], context=context)
 
     candidates: list[Candidate] = []
     seen: set[str] = set()
     for card in reader.cards:
-        candidate, valid = _candidate(card, base_url)
+        candidate, valid = _candidate(
+            card,
+            base_url,
+            verified_no_commission=context.no_commission,
+            observed_at=observed_at,
+        )
         if not valid:
             return SearchPageParse(recognized=False, candidates=[])
         if candidate is None or candidate.source_id in seen:
             continue
         seen.add(candidate.source_id)
         candidates.append(candidate)
-    return SearchPageParse(recognized=True, candidates=candidates)
+    return SearchPageParse(recognized=True, candidates=candidates, context=context)

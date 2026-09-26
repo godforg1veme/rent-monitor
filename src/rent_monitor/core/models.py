@@ -13,6 +13,14 @@ class CommissionStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class FieldEvidence(StrEnum):
+    EXPLICIT_CARD = "explicit_card"
+    STRUCTURED_PAGE = "structured_page"
+    VERIFIED_FILTER = "verified_filter"
+    DETAIL_PAGE = "detail_page"
+    UNKNOWN = "unknown"
+
+
 class SellerType(StrEnum):
     PRIVATE = "private"
     AGENCY = "agency"
@@ -71,6 +79,9 @@ class Listing:
     commission_value: int | None
     commission_unit: str | None
     published_at: datetime | None
+    price_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
+    rooms_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
+    commission_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
 
     def __post_init__(self) -> None:
         if not self.source.strip() or not self.source_id.strip() or not self.url.strip():
@@ -83,6 +94,12 @@ class Listing:
             "commission_status",
             _enum_value(CommissionStatus, self.commission_status, "commission_status"),
         )
+        for field_name in ("price_evidence", "rooms_evidence", "commission_evidence"):
+            object.__setattr__(
+                self,
+                field_name,
+                _enum_value(FieldEvidence, getattr(self, field_name), field_name),
+            )
         if self.price_rub is not None and (
             isinstance(self.price_rub, bool)
             or not isinstance(self.price_rub, int)
@@ -124,6 +141,9 @@ class Candidate:
     commission_value: int | None = None
     commission_unit: str | None = None
     published_at: datetime | None = None
+    price_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
+    rooms_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
+    commission_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
 
     def __post_init__(self) -> None:
         if not self.source.strip() or not self.source_id.strip() or not self.url.strip():
@@ -136,6 +156,12 @@ class Candidate:
             "commission_status",
             _enum_value(CommissionStatus, self.commission_status, "commission_status"),
         )
+        for field_name in ("price_evidence", "rooms_evidence", "commission_evidence"):
+            object.__setattr__(
+                self,
+                field_name,
+                _enum_value(FieldEvidence, getattr(self, field_name), field_name),
+            )
 
     def to_listing(self) -> Listing:
         return Listing(
@@ -154,6 +180,9 @@ class Candidate:
             commission_value=self.commission_value,
             commission_unit=self.commission_unit,
             published_at=self.published_at,
+            price_evidence=self.price_evidence,
+            rooms_evidence=self.rooms_evidence,
+            commission_evidence=self.commission_evidence,
         )
 
 
@@ -164,6 +193,7 @@ class SearchPageParse:
     recognized: bool
     candidates: list[Candidate]
     blocked_reason: str | None = None
+    context: object | None = None
 
 
 @dataclass(frozen=True, slots=True)

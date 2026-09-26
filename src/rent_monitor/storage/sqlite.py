@@ -22,6 +22,7 @@ from rent_monitor.core.dedupe import (
 )
 from rent_monitor.core.models import (
     CommissionStatus,
+    FieldEvidence,
     Listing,
     Notification,
     SellerType,
@@ -54,6 +55,9 @@ CREATE TABLE IF NOT EXISTS listings (
     commission_value INTEGER,
     commission_unit TEXT,
     published_at TEXT,
+    price_evidence TEXT NOT NULL DEFAULT 'unknown',
+    rooms_evidence TEXT NOT NULL DEFAULT 'unknown',
+    commission_evidence TEXT NOT NULL DEFAULT 'unknown',
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     PRIMARY KEY (source, source_id)
@@ -163,6 +167,9 @@ def _listing_values(listing: Listing) -> tuple[object, ...]:
         listing.commission_value,
         listing.commission_unit,
         _encode_datetime(listing.published_at),
+        listing.price_evidence.value,
+        listing.rooms_evidence.value,
+        listing.commission_evidence.value,
     )
 
 
@@ -183,6 +190,9 @@ def _listing_from_row(row: aiosqlite.Row) -> Listing:
         commission_value=row["commission_value"],
         commission_unit=row["commission_unit"],
         published_at=_decode_datetime(row["published_at"]),
+        price_evidence=FieldEvidence(row["price_evidence"]),
+        rooms_evidence=FieldEvidence(row["rooms_evidence"]),
+        commission_evidence=FieldEvidence(row["commission_evidence"]),
     )
 
 
@@ -225,7 +235,19 @@ class SQLiteRepository:
         await connection.execute("PRAGMA busy_timeout = 5000")
         await connection.execute("PRAGMA journal_mode = WAL")
         await connection.executescript(_SCHEMA)
+        await self._ensure_listing_evidence_columns(connection)
         self._connection = connection
+
+    @staticmethod
+    async def _ensure_listing_evidence_columns(connection: aiosqlite.Connection) -> None:
+        cursor = await connection.execute("PRAGMA table_info(listings)")
+        existing = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+        for column in ("price_evidence", "rooms_evidence", "commission_evidence"):
+            if column not in existing:
+                await connection.execute(
+                    f"ALTER TABLE listings ADD COLUMN {column} TEXT NOT NULL DEFAULT 'unknown'"
+                )
 
     async def close(self) -> None:
         async with self._lock:
@@ -280,6 +302,7 @@ class SQLiteRepository:
                 """UPDATE listings SET url=?, price_rub=?, title=?, address=?, address_norm=?,
                    rooms=?, area_m2=?, metro=?, metro_minutes=?, seller_type=?,
                    commission_status=?, commission_value=?, commission_unit=?, published_at=?,
+                   price_evidence=?, rooms_evidence=?, commission_evidence=?,
                    last_seen_at=? WHERE source=? AND source_id=?""",
                 (*values[2:], now, listing.source, listing.source_id),
             )
@@ -294,8 +317,9 @@ class SQLiteRepository:
                 """INSERT INTO listings(
                    source, source_id, group_id, url, price_rub, title, address, address_norm,
                    rooms, area_m2, metro, metro_minutes, seller_type, commission_status,
-                   commission_value, commission_unit, published_at, first_seen_at, last_seen_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   commission_value, commission_unit, published_at, price_evidence,
+                   rooms_evidence, commission_evidence, first_seen_at, last_seen_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (listing.source, listing.source_id, group_id, *values[2:], now, now),
             )
             is_new = True
