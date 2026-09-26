@@ -86,12 +86,12 @@ def transition_source_state(
     outcome: SourceOutcome,
     now: datetime,
     *,
-    normal_interval_seconds: int,
+    normal_interval_seconds: int | float,
 ) -> SourceTransition:
     """Apply a deterministic retry policy to one collection outcome."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
-    if normal_interval_seconds < 1:
+    if normal_interval_seconds <= 0:
         raise ValueError("normal_interval_seconds must be positive")
     now = now.astimezone(UTC)
 

@@ -14,7 +14,7 @@ from aiogram.enums import ParseMode
 
 from rent_monitor.collectors import build_collectors
 from rent_monitor.config import ConfigurationError, load_config, read_telegram_token
-from rent_monitor.core.scheduler import run_outbox_worker, run_scheduler
+from rent_monitor.core.scheduler import CollectorRuntime, run_collectors, run_outbox_worker
 from rent_monitor.storage.sqlite import SQLiteRepository
 from rent_monitor.telegram.bot import TelegramNotifier, create_dispatcher
 from rent_monitor.transport import BoundedHttpClient
@@ -40,16 +40,23 @@ async def serve(config_path: Path) -> None:
 
     try:
         async with BoundedHttpClient(config.max_response_bytes) as client:
+            source_configs = {source.name: source for source in config.sources}
+            runtimes = tuple(
+                CollectorRuntime(
+                    collector=collector,
+                    client=client,
+                    interval_seconds=source_configs[collector.source].poll_interval_seconds,
+                )
+                for collector in collectors
+            )
             try:
                 async with asyncio.TaskGroup() as tasks:
                     scheduler_task = tasks.create_task(
-                        run_scheduler(
-                            collectors,
+                        run_collectors(
+                            runtimes,
                             config.criteria,
-                            client,
                             repository,
                             stop_event,
-                            poll_interval_seconds=config.poll_interval_seconds,
                             state_changed=state_changed,
                         ),
                         name="source-scheduler",

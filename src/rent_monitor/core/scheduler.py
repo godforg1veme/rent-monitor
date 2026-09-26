@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections.abc import Sequence
-from datetime import UTC, datetime
+import random
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from rent_monitor.core.filters import matches_listing
 from rent_monitor.core.models import CollectionResult, Notification, SearchCriteria, SourceHealth
+from rent_monitor.core.source_state import (
+    SourceOutcome,
+    SourceRunHealth,
+    SourceTransition,
+    transition_source_state,
+)
 from rent_monitor.storage.sqlite import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -24,6 +31,20 @@ class Collector(Protocol):
 
 class Notifier(Protocol):
     async def send_notification(self, chat_id: int, notification: Notification) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CollectorRuntime:
+    collector: Collector
+    client: object
+    interval_seconds: float
+    jitter_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.interval_seconds <= 0:
+            raise ValueError("interval_seconds must be positive")
+        if self.jitter_seconds < 0:
+            raise ValueError("jitter_seconds must be non-negative")
 
 
 async def process_collection_result(
@@ -119,108 +140,178 @@ async def run_scheduler(
     poll_interval_seconds: int = 300,
     state_changed: asyncio.Event | None = None,
 ) -> None:
-    """Run collectors sequentially in staggered slots with per-source backoff."""
-    if not collectors:
-        raise ValueError("At least one collector must be configured")
+    """Compatibility wrapper that now runs every collector independently."""
+    runtimes = tuple(
+        CollectorRuntime(collector, client, poll_interval_seconds) for collector in collectors
+    )
+    await run_collectors(
+        runtimes,
+        criteria,
+        repository,
+        stop_event,
+        state_changed=state_changed,
+    )
 
-    backoff_until: dict[str, float] = {}
-    previous_backoff_seconds: dict[str, float] = {}
-    last_attempt_at: dict[str, float] = {}
-    next_cycle = time.monotonic()
+
+async def run_collectors(
+    runtimes: Sequence[CollectorRuntime],
+    criteria: SearchCriteria,
+    repository: SQLiteRepository,
+    stop_event: asyncio.Event,
+    *,
+    state_changed: asyncio.Event | None = None,
+    on_transition: Callable[[SourceTransition], Awaitable[None]] | None = None,
+) -> None:
+    """Run every source in its own supervised task."""
+    if not runtimes:
+        raise ValueError("At least one collector runtime must be configured")
+    async with asyncio.TaskGroup() as tasks:
+        for runtime in runtimes:
+            tasks.create_task(
+                run_source_runner(
+                    runtime,
+                    criteria,
+                    repository,
+                    stop_event,
+                    state_changed=state_changed,
+                    on_transition=on_transition,
+                ),
+                name=f"source-{runtime.collector.source}",
+            )
+
+
+async def run_source_runner(
+    runtime: CollectorRuntime,
+    criteria: SearchCriteria,
+    repository: SQLiteRepository,
+    stop_event: asyncio.Event,
+    *,
+    state_changed: asyncio.Event | None = None,
+    on_transition: Callable[[SourceTransition], Awaitable[None]] | None = None,
+) -> None:
+    """Run one source without allowing it to delay another source."""
     while not stop_event.is_set():
-        cycle_started = time.monotonic()
-        for index, collector in enumerate(collectors):
-            if stop_event.is_set():
-                break
-            if await repository.is_paused():
-                break
+        if await repository.is_paused():
+            await _wait_for_wakeup(stop_event, state_changed, timeout=30.0)
+            continue
 
-            slot = cycle_started + poll_interval_seconds * index / len(collectors)
-            source_statuses = await repository.get_source_statuses()
-            source_status = next(
-                (status for status in source_statuses if status.source == collector.source), None
+        transition = await run_source_once(
+            runtime,
+            criteria,
+            repository,
+            on_transition=on_transition,
+        )
+        state = (
+            transition.current
+            if transition is not None
+            else await repository.get_source_run_state(runtime.collector.source)
+        )
+        if state.health is SourceRunHealth.MANUAL_ATTENTION:
+            await _wait_for_wakeup(stop_event, state_changed, timeout=None)
+            continue
+        now = datetime.now(UTC)
+        delay = (
+            max(0.0, (state.next_attempt_at - now).total_seconds())
+            if state.next_attempt_at is not None
+            else runtime.interval_seconds
+        )
+        await _wait_for_wakeup(stop_event, state_changed, timeout=delay)
+
+
+async def run_source_once(
+    runtime: CollectorRuntime,
+    criteria: SearchCriteria,
+    repository: SQLiteRepository,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    jitter: Callable[[float, float], float] = random.uniform,
+    on_transition: Callable[[SourceTransition], Awaitable[None]] | None = None,
+) -> SourceTransition | None:
+    """Run at most one due collection attempt and persist its runtime state."""
+    attempted_at = now()
+    previous = await repository.get_source_run_state(runtime.collector.source)
+    if previous.health is SourceRunHealth.MANUAL_ATTENTION:
+        return None
+    if previous.next_attempt_at is not None and previous.next_attempt_at > attempted_at:
+        return None
+
+    try:
+        result = await runtime.collector.collect(criteria, runtime.client)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "source=%s phase=collect status=error category=%s",
+            runtime.collector.source,
+            _error_category(exc),
+        )
+        await repository.record_source_status(
+            runtime.collector.source,
+            SourceHealth.ERROR,
+            attempted_at=attempted_at,
+            failure_code="collector_error",
+        )
+        outcome = SourceOutcome.failure("collector_error")
+    else:
+        await process_collection_result(result, criteria, repository)
+        if result.status is SourceHealth.OK and result.recognized:
+            source_ids = result.seen_source_ids or tuple(
+                listing.source_id for listing in result.listings
             )
-            if source_status is not None and source_status.health is SourceHealth.PAUSED:
-                continue
-            if backoff_until.get(collector.source, 0.0) > time.monotonic():
-                continue
-
-            minimum_interval = (
-                last_attempt_at.get(collector.source, float("-inf")) + poll_interval_seconds
+            outcome = SourceOutcome.success(
+                card_count=len(source_ids),
+                newest_id=source_ids[0] if source_ids else None,
             )
-            deadline = max(slot, minimum_interval)
-            while time.monotonic() < deadline and not stop_event.is_set():
-                await _wait_until(deadline, stop_event, state_changed)
-                if await repository.is_paused():
-                    break
-            if stop_event.is_set() or await repository.is_paused():
-                break
+        else:
+            outcome = SourceOutcome.failure(
+                result.failure_code or "collector_error",
+                retry_after_seconds=result.retry_after_seconds,
+            )
 
-            last_attempt_at[collector.source] = time.monotonic()
-            try:
-                result = await collector.collect(criteria, client)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "source=%s phase=collect status=error category=%s",
-                    collector.source,
-                    _error_category(exc),
-                )
-                await repository.record_source_status(
-                    collector.source,
-                    SourceHealth.ERROR,
-                    failure_code="collector_error",
-                )
-                continue
-
-            await process_collection_result(result, criteria, repository)
-            if result.retry_after_seconds is not None:
-                delay = min(result.retry_after_seconds, 6 * 60 * 60)
-                previous_backoff_seconds[collector.source] = delay
-                backoff_until[collector.source] = time.monotonic() + delay
-            elif result.failure_code == "rate_limited":
-                delay = min(
-                    max(
-                        poll_interval_seconds,
-                        previous_backoff_seconds.get(collector.source, 0) * 2,
-                    ),
-                    6 * 60 * 60,
-                )
-                previous_backoff_seconds[collector.source] = delay
-                backoff_until[collector.source] = time.monotonic() + delay
-            elif result.status is SourceHealth.OK:
-                previous_backoff_seconds.pop(collector.source, None)
-                backoff_until.pop(collector.source, None)
-
-        next_cycle = max(cycle_started + poll_interval_seconds, time.monotonic())
-        await _wait_until(next_cycle, stop_event, state_changed)
+    transition = transition_source_state(
+        previous,
+        outcome,
+        attempted_at,
+        normal_interval_seconds=runtime.interval_seconds,
+    )
+    if outcome.ok and transition.current.next_attempt_at is not None and runtime.jitter_seconds:
+        offset = jitter(-runtime.jitter_seconds, runtime.jitter_seconds)
+        transition = SourceTransition(
+            transition.previous,
+            replace(
+                transition.current,
+                next_attempt_at=max(
+                    attempted_at + timedelta(seconds=1),
+                    transition.current.next_attempt_at + timedelta(seconds=offset),
+                ),
+            ),
+        )
+    await repository.save_source_run_state(transition.current)
+    if transition.changed and on_transition is not None:
+        await on_transition(transition)
+    return transition
 
 
-async def _wait_until(
-    deadline: float,
+async def _wait_for_wakeup(
     stop_event: asyncio.Event,
     state_changed: asyncio.Event | None,
+    *,
+    timeout: float | None,
 ) -> None:
-    while not stop_event.is_set():
-        delay = deadline - time.monotonic()
-        if delay <= 0:
-            return
-        wait_events = [asyncio.create_task(stop_event.wait())]
-        if state_changed is not None:
-            wait_events.append(asyncio.create_task(state_changed.wait()))
-        done, pending = await asyncio.wait(
-            wait_events,
-            timeout=min(delay, 30.0),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        if state_changed is not None and any(task is wait_events[-1] for task in done):
-            state_changed.clear()
-            return
+    waiters = [asyncio.create_task(stop_event.wait())]
+    if state_changed is not None:
+        waiters.append(asyncio.create_task(state_changed.wait()))
+    _, pending = await asyncio.wait(
+        waiters,
+        timeout=timeout,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    if state_changed is not None and state_changed.is_set():
+        state_changed.clear()
 
 
 def _error_category(error: Exception) -> str:
