@@ -11,7 +11,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from rent_monitor.core.filters import matches_listing
-from rent_monitor.core.models import CollectionResult, Notification, SearchCriteria, SourceHealth
+from rent_monitor.core.models import (
+    CollectionResult,
+    Notification,
+    SearchCriteria,
+    SourceAlert,
+    SourceHealth,
+)
 from rent_monitor.core.source_state import (
     SourceOutcome,
     SourceRunHealth,
@@ -31,6 +37,8 @@ class Collector(Protocol):
 
 class Notifier(Protocol):
     async def send_notification(self, chat_id: int, notification: Notification) -> None: ...
+
+    async def send_source_alert(self, chat_id: int, alert: SourceAlert) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +119,39 @@ async def deliver_outbox_once(repository: SQLiteRepository, notifier: Notifier) 
             )
         else:
             await repository.mark_delivered(notification.notification_id)
+            delivered_at = datetime.now(UTC)
+            if notification.first_seen_at is not None:
+                first_seen_at = _as_utc(notification.first_seen_at)
+                logger.info(
+                    "telegram phase=delivery status=delivered first_seen_to_delivered_seconds=%.3f",
+                    max(0.0, (delivered_at - first_seen_at).total_seconds()),
+                )
+                if notification.listing.published_at is not None:
+                    published_at = _as_utc(notification.listing.published_at)
+                    logger.info(
+                        "telegram phase=latency status=observed "
+                        "published_to_first_seen_seconds=%.3f",
+                        max(
+                            0.0,
+                            (first_seen_at - published_at).total_seconds(),
+                        ),
+                    )
+            delivered += 1
+
+    for alert in await repository.claim_pending_source_alerts(limit=20):
+        try:
+            await notifier.send_source_alert(chat_id, alert)
+        except asyncio.CancelledError:
+            await repository.retry_source_alert(alert.alert_id, "delivery_interrupted")
+            raise
+        except Exception:
+            logger.warning(
+                "telegram phase=source_alert status=retry alert_id=%s",
+                alert.alert_id,
+            )
+            await repository.retry_source_alert(alert.alert_id, "telegram_send_failed")
+        else:
+            await repository.mark_source_alert_delivered(alert.alert_id)
             delivered += 1
     return delivered
 
@@ -287,6 +328,7 @@ async def run_source_once(
             ),
         )
     await repository.save_source_run_state(transition.current)
+    await repository.enqueue_source_transition(transition)
     if transition.changed and on_transition is not None:
         await on_transition(transition)
     return transition
@@ -321,3 +363,7 @@ def _error_category(error: Exception) -> str:
     if "http" in name or "connect" in name:
         return "transport"
     return "unexpected"
+
+
+def _as_utc(value: datetime) -> datetime:
+    return (value.replace(tzinfo=UTC) if value.tzinfo is None else value).astimezone(UTC)

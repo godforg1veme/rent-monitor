@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import re
 import secrets
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,10 +26,11 @@ from rent_monitor.core.models import (
     Listing,
     Notification,
     SellerType,
+    SourceAlert,
     SourceHealth,
     SourceStatusRecord,
 )
-from rent_monitor.core.source_state import SourceRunHealth, SourceRunState
+from rent_monitor.core.source_state import SourceRunHealth, SourceRunState, SourceTransition
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS listing_groups (
@@ -126,6 +127,26 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     last_error_code TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_pending_idx ON notification_outbox(status, created_at);
+
+CREATE TABLE IF NOT EXISTS source_alert_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    health TEXT NOT NULL,
+    failure_code TEXT,
+    occurred_at TEXT NOT NULL,
+    last_success_at TEXT,
+    next_attempt_at TEXT,
+    outage_seconds INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    deliver_after TEXT NOT NULL,
+    claimed_until TEXT,
+    delivered_at TEXT,
+    last_error_code TEXT
+);
+CREATE INDEX IF NOT EXISTS source_alert_pending_idx
+    ON source_alert_outbox(status, deliver_after, occurred_at);
 """
 
 
@@ -219,8 +240,14 @@ class SQLiteRepository:
     listing: normalized listing, duplicate group, and outbox row commit together.
     """
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(
+        self,
+        database_path: str | Path,
+        *,
+        clock: Callable[[], datetime] = _now,
+    ) -> None:
         self.database_path = str(database_path)
+        self._clock = clock
         self._connection: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
 
@@ -419,6 +446,7 @@ class SQLiteRepository:
                         listing=group_listings[0],
                         alternatives=group_listings[1:],
                         attempts=row["attempts"] + 1,
+                        first_seen_at=_decode_datetime(listing_rows[0]["first_seen_at"]),
                     )
                 )
             return notifications
@@ -450,6 +478,122 @@ class SQLiteRepository:
                    SET status='pending', next_attempt_at=?, claimed_until=NULL,
                        last_error_code=? WHERE id=?""",
                 (next_attempt_at, safe_code, notification_id),
+            )
+
+    async def enqueue_source_transition(self, transition: SourceTransition) -> bool:
+        """Queue one operator-facing alert for a meaningful source transition."""
+        previous, current = transition.previous, transition.current
+        is_recovery = current.health is SourceRunHealth.HEALTHY and previous.health not in {
+            SourceRunHealth.STARTING,
+            SourceRunHealth.HEALTHY,
+        }
+        is_failure = transition.changed and current.health in {
+            SourceRunHealth.COOLDOWN,
+            SourceRunHealth.BLOCKED,
+            SourceRunHealth.MANUAL_ATTENTION,
+        }
+        is_repeated_degraded = (
+            current.health is SourceRunHealth.DEGRADED and current.consecutive_failures == 2
+        )
+        if not (is_recovery or is_failure or is_repeated_degraded):
+            return False
+
+        occurred_at = current.last_attempt_at or current.transitioned_at or self._clock()
+        occurred_at = occurred_at.astimezone(UTC)
+        event_key = f"{current.source}:{occurred_at.isoformat()}:{current.health.value}"
+        outage_seconds = None
+        if is_recovery and previous.outage_started_at is not None:
+            outage_seconds = max(
+                0,
+                int((occurred_at - previous.outage_started_at.astimezone(UTC)).total_seconds()),
+            )
+        async with self._transaction() as connection:
+            cursor = await connection.execute(
+                """INSERT INTO source_alert_outbox(
+                       event_key, source, health, failure_code, occurred_at,
+                       last_success_at, next_attempt_at, outage_seconds, deliver_after)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(event_key) DO NOTHING""",
+                (
+                    event_key,
+                    current.source,
+                    current.health.value,
+                    _valid_failure_code(current.failure_code),
+                    occurred_at.isoformat(),
+                    _encode_datetime(current.last_success_at),
+                    _encode_datetime(current.next_attempt_at),
+                    outage_seconds,
+                    self._clock().astimezone(UTC).isoformat(),
+                ),
+            )
+            created = cursor.rowcount == 1
+            await cursor.close()
+            return created
+
+    async def claim_pending_source_alerts(self, limit: int = 20) -> list[SourceAlert]:
+        if limit < 1:
+            return []
+        now = self._clock().astimezone(UTC)
+        claimed_until = now + timedelta(minutes=5)
+        async with self._transaction() as connection:
+            cursor = await connection.execute(
+                """SELECT * FROM source_alert_outbox
+                   WHERE (status='pending' AND deliver_after <= ?)
+                      OR (status='sending' AND claimed_until < ?)
+                   ORDER BY occurred_at, id LIMIT ?""",
+                (now.isoformat(), now.isoformat(), limit),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            alerts: list[SourceAlert] = []
+            for row in rows:
+                await connection.execute(
+                    """UPDATE source_alert_outbox
+                       SET status='sending', attempts=attempts+1, claimed_until=? WHERE id=?""",
+                    (claimed_until.isoformat(), row["id"]),
+                )
+                alerts.append(
+                    SourceAlert(
+                        alert_id=row["id"],
+                        event_key=row["event_key"],
+                        source=row["source"],
+                        health=row["health"],
+                        failure_code=row["failure_code"],
+                        occurred_at=datetime.fromisoformat(row["occurred_at"]),
+                        last_success_at=_decode_datetime(row["last_success_at"]),
+                        next_attempt_at=_decode_datetime(row["next_attempt_at"]),
+                        outage_seconds=row["outage_seconds"],
+                        attempts=row["attempts"] + 1,
+                    )
+                )
+            return alerts
+
+    async def mark_source_alert_delivered(self, alert_id: int) -> None:
+        async with self._transaction() as connection:
+            await connection.execute(
+                """UPDATE source_alert_outbox
+                   SET status='delivered', delivered_at=?, claimed_until=NULL,
+                       last_error_code=NULL WHERE id=?""",
+                (self._clock().astimezone(UTC).isoformat(), alert_id),
+            )
+
+    async def retry_source_alert(self, alert_id: int, error_code: str) -> None:
+        safe_code = _valid_failure_code(error_code)
+        async with self._transaction() as connection:
+            cursor = await connection.execute(
+                "SELECT attempts FROM source_alert_outbox WHERE id=?",
+                (alert_id,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            attempts = row["attempts"] if row is not None else 1
+            delay_seconds = min(2 ** min(max(attempts, 1), 12), 60 * 60)
+            deliver_after = self._clock() + timedelta(seconds=delay_seconds)
+            await connection.execute(
+                """UPDATE source_alert_outbox
+                   SET status='pending', deliver_after=?, claimed_until=NULL,
+                       last_error_code=? WHERE id=?""",
+                (deliver_after.astimezone(UTC).isoformat(), safe_code, alert_id),
             )
 
     async def find_duplicate_candidates(self, listing: Listing) -> list[Listing]:

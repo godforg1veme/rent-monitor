@@ -13,7 +13,8 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Message
 
-from rent_monitor.core.models import Listing, Notification
+from rent_monitor.core.models import Listing, Notification, SourceAlert
+from rent_monitor.core.source_state import SourceRunHealth
 from rent_monitor.storage.sqlite import SQLiteRepository
 from rent_monitor.transport import ALLOWED_HOSTS
 
@@ -39,6 +40,13 @@ class TelegramNotifier:
             chat_id=chat_id,
             text=format_notification(notification.listing, notification.alternatives),
             reply_markup=keyboard if keyboard.inline_keyboard else None,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
+
+    async def send_source_alert(self, chat_id: int, alert: SourceAlert) -> None:
+        await self.bot.send_message(
+            chat_id=chat_id,
+            text=format_source_alert(alert),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
 
@@ -80,11 +88,38 @@ def create_dispatcher(
     async def status(message: Message) -> None:
         if not await require_owner(message):
             return
-        source_statuses = await repository.get_source_statuses()
-        known = {record.source: record for record in source_statuses}
+        runtime_states = await repository.list_source_run_states()
+        runtime_known = {record.source: record for record in runtime_states}
+        source_statuses = await repository.get_source_statuses() if not runtime_states else []
+        legacy_known = {record.source: record for record in source_statuses}
         lines = ["<b>Состояние поиска</b>"]
         for source in ("avito", "cian", "domclick", "yandex"):
-            record = known.get(source)
+            runtime = runtime_known.get(source)
+            if runtime is not None:
+                interval = "нет данных"
+                if runtime.last_attempt_at is not None and runtime.next_attempt_at is not None:
+                    seconds = max(
+                        0,
+                        int((runtime.next_attempt_at - runtime.last_attempt_at).total_seconds()),
+                    )
+                    interval = f"{seconds} сек."
+                manual = (
+                    ", требуется ручное действие"
+                    if runtime.health is SourceRunHealth.MANUAL_ATTENTION
+                    else ""
+                )
+                lines.append(
+                    f"{html.escape(_source_label(source))}: "
+                    f"{html.escape(runtime.health.value)}, "
+                    f"последний успех: {_format_time(runtime.last_success_at)}, "
+                    f"следующая попытка: {_format_time(runtime.next_attempt_at)}, "
+                    f"интервал: {interval}, ошибок подряд: "
+                    f"{runtime.consecutive_failures}, карточек: "
+                    f"{runtime.last_card_count if runtime.last_card_count is not None else '—'}, "
+                    f"новейший ID: {html.escape(runtime.last_newest_id or '—')}{manual}"
+                )
+                continue
+            record = legacy_known.get(source)
             if record is None:
                 lines.append(f"{html.escape(_source_label(source))}: ещё не проверялся")
                 continue
@@ -139,6 +174,28 @@ def format_notification(listing: Listing, alternatives: tuple[Listing, ...] = ()
         "Источник: "
         + ", ".join(html.escape(_source_label(source)) for source in dict.fromkeys(sources))
     )
+    return "\n".join(lines)
+
+
+def format_source_alert(alert: SourceAlert) -> str:
+    source = html.escape(_source_label(alert.source))
+    health_labels = {
+        "healthy": "работа восстановлена",
+        "degraded": "повторяющиеся ошибки",
+        "cooldown": "временная пауза",
+        "blocked": "источник заблокирован",
+        "manual_attention": "нужно ручное действие",
+    }
+    lines = [f"<b>{source}: {health_labels.get(alert.health, html.escape(alert.health))}</b>"]
+    if alert.failure_code:
+        lines.append(f"Причина: <code>{html.escape(alert.failure_code)}</code>")
+    lines.append(f"Событие: {_format_time(alert.occurred_at)}")
+    if alert.next_attempt_at is not None:
+        lines.append(f"Следующая попытка: {_format_time(alert.next_attempt_at)}")
+    if alert.outage_seconds is not None:
+        lines.append(f"Перерыв: {alert.outage_seconds} сек.")
+    if alert.health == "manual_attention":
+        lines.append("Автоматический опрос остановлен до ручной проверки.")
     return "\n".join(lines)
 
 

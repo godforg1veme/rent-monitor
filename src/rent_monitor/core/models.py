@@ -241,3 +241,18 @@ class Notification:
     listing: Listing
     alternatives: tuple[Listing, ...] = ()
     attempts: int = 0
+    first_seen_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAlert:
+    alert_id: int
+    event_key: str
+    source: str
+    health: str
+    failure_code: str | None
+    occurred_at: datetime
+    last_success_at: datetime | None
+    next_attempt_at: datetime | None
+    outage_seconds: int | None
+    attempts: int = 0
