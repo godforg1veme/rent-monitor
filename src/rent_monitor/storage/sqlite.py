@@ -28,6 +28,7 @@ from rent_monitor.core.models import (
     SourceHealth,
     SourceStatusRecord,
 )
+from rent_monitor.core.source_state import SourceRunHealth, SourceRunState
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS listing_groups (
@@ -79,6 +80,20 @@ CREATE TABLE IF NOT EXISTS source_status (
     last_attempt_at TEXT,
     last_success_at TEXT,
     failure_code TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_runtime (
+    source TEXT PRIMARY KEY,
+    health TEXT NOT NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    failure_code TEXT,
+    last_attempt_at TEXT,
+    last_success_at TEXT,
+    next_attempt_at TEXT,
+    transitioned_at TEXT,
+    outage_started_at TEXT,
+    last_card_count INTEGER,
+    last_newest_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS owner_binding (
@@ -168,6 +183,22 @@ def _listing_from_row(row: aiosqlite.Row) -> Listing:
         commission_value=row["commission_value"],
         commission_unit=row["commission_unit"],
         published_at=_decode_datetime(row["published_at"]),
+    )
+
+
+def _source_run_state_from_row(row: aiosqlite.Row) -> SourceRunState:
+    return SourceRunState(
+        source=row["source"],
+        health=SourceRunHealth(row["health"]),
+        consecutive_failures=row["consecutive_failures"],
+        failure_code=row["failure_code"],
+        last_attempt_at=_decode_datetime(row["last_attempt_at"]),
+        last_success_at=_decode_datetime(row["last_success_at"]),
+        next_attempt_at=_decode_datetime(row["next_attempt_at"]),
+        transitioned_at=_decode_datetime(row["transitioned_at"]),
+        outage_started_at=_decode_datetime(row["outage_started_at"]),
+        last_card_count=row["last_card_count"],
+        last_newest_id=row["last_newest_id"],
     )
 
 
@@ -532,6 +563,59 @@ class SQLiteRepository:
             cleared = cursor.rowcount == 1
             await cursor.close()
             return cleared
+
+    async def get_source_run_state(self, source: str) -> SourceRunState:
+        async with self._lock:
+            cursor = await self._db().execute(
+                "SELECT * FROM source_runtime WHERE source=?",
+                (source,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+        return (
+            _source_run_state_from_row(row) if row is not None else SourceRunState.initial(source)
+        )
+
+    async def save_source_run_state(self, state: SourceRunState) -> None:
+        async with self._transaction() as connection:
+            await connection.execute(
+                """INSERT INTO source_runtime(
+                       source, health, consecutive_failures, failure_code, last_attempt_at,
+                       last_success_at, next_attempt_at, transitioned_at, outage_started_at,
+                       last_card_count, last_newest_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source) DO UPDATE SET
+                       health=excluded.health,
+                       consecutive_failures=excluded.consecutive_failures,
+                       failure_code=excluded.failure_code,
+                       last_attempt_at=excluded.last_attempt_at,
+                       last_success_at=excluded.last_success_at,
+                       next_attempt_at=excluded.next_attempt_at,
+                       transitioned_at=excluded.transitioned_at,
+                       outage_started_at=excluded.outage_started_at,
+                       last_card_count=excluded.last_card_count,
+                       last_newest_id=excluded.last_newest_id""",
+                (
+                    state.source,
+                    state.health.value,
+                    state.consecutive_failures,
+                    _valid_failure_code(state.failure_code),
+                    _encode_datetime(state.last_attempt_at),
+                    _encode_datetime(state.last_success_at),
+                    _encode_datetime(state.next_attempt_at),
+                    _encode_datetime(state.transitioned_at),
+                    _encode_datetime(state.outage_started_at),
+                    state.last_card_count,
+                    state.last_newest_id,
+                ),
+            )
+
+    async def list_source_run_states(self) -> list[SourceRunState]:
+        async with self._lock:
+            cursor = await self._db().execute("SELECT * FROM source_runtime ORDER BY source")
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return [_source_run_state_from_row(row) for row in rows]
 
     async def issue_pairing_code(self, *, ttl_seconds: int = 600) -> str:
         if ttl_seconds < 1:
