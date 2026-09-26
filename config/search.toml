@@ -3,16 +3,33 @@ city = "Москва"
 rooms = 2
 max_monthly_price_rub = 70000
 require_no_commission = true
-poll_interval_seconds = 300
 
 [limits]
 max_response_bytes = 8388608
 
-[sources]
-avito = true
-cian = true
-domclick = true
-yandex = true
+[sources.avito]
+enabled = true
+
+[[sources.avito.searches]]
+name = "moscow-rent"
+url = "https://www.avito.ru/moskva/kvartiry/sdam/na_dlitelnyy_srok/bez_komissii-ASgBAgICA0SSA8gQ8AeQUp74DgI?s=104"
+poll_interval_seconds = 60
+
+[sources.yandex]
+enabled = true
+poll_interval_seconds = 300
+
+[sources.cian]
+enabled = false
+poll_interval_seconds = 300
+
+[sources.domclick]
+enabled = false
+poll_interval_seconds = 300
+
+[captcha]
+enabled = true
+token_directory = "/run/rent-monitor-captcha/tokens"
 
 [database]
 path = "data/rent-monitor.sqlite3"
