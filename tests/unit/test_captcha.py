@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
@@ -66,6 +67,18 @@ class CaptchaSessionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.token, second.token)
         self.assertEqual([path.name for path in self.directory.iterdir()], [first.token])
+
+    async def test_expiry_worker_removes_idle_session(self) -> None:
+        session = await self.manager.issue("avito")
+        self.clock.advance(timedelta(minutes=16))
+        stop_event = asyncio.Event()
+
+        worker = asyncio.create_task(self.manager.run_expiry_worker(stop_event, poll_seconds=0.01))
+        await asyncio.sleep(0.02)
+        stop_event.set()
+        await worker
+
+        self.assertFalse((self.directory / session.token).exists())
 
     async def test_startup_removes_stale_token_files(self) -> None:
         self.directory.mkdir(parents=True)

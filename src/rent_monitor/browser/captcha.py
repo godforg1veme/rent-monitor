@@ -101,6 +101,21 @@ class CaptchaSessionManager:
             self._active = None
             self._initialized = True
 
+    async def run_expiry_worker(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_seconds: float = 15.0,
+    ) -> None:
+        if poll_seconds <= 0:
+            raise ValueError("poll_seconds must be positive")
+        while not stop_event.is_set():
+            await self.remove_expired()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_seconds)
+            except TimeoutError:
+                pass
+
     async def _initialize_unlocked(self) -> None:
         if self._initialized:
             return

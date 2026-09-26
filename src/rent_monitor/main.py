@@ -93,6 +93,14 @@ async def serve(config_path: Path) -> None:
                         run_outbox_worker(repository, TelegramNotifier(bot), stop_event),
                         name="telegram-outbox",
                     )
+                    captcha_expiry_task = (
+                        tasks.create_task(
+                            captcha_manager.run_expiry_worker(stop_event),
+                            name="captcha-token-expiry",
+                        )
+                        if captcha_manager is not None
+                        else None
+                    )
                     polling_task = tasks.create_task(
                         dispatcher.start_polling(
                             bot,
@@ -109,6 +117,8 @@ async def serve(config_path: Path) -> None:
                         stop_event.set()
                         scheduler_task.cancel()
                         outbox_task.cancel()
+                        if captcha_expiry_task is not None:
+                            captcha_expiry_task.cancel()
             except* Exception:
                 logger.error("application phase=run status=error")
                 raise
