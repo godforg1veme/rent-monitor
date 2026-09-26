@@ -379,13 +379,21 @@ def _candidate(
 
     title = _field(card, "title")
     price = _integer(_field(card, "price_value"))
-    status, commission_value, commission_unit = _commission(_field(card, "specific_params"))
+    commission_text = _field(card, "specific_params")
+    status, commission_value, commission_unit = _commission(commission_text)
     commission_evidence = (
         FieldEvidence.EXPLICIT_CARD
         if status is not CommissionStatus.UNKNOWN
         else FieldEvidence.UNKNOWN
     )
-    if status is CommissionStatus.UNKNOWN and verified_no_commission:
+    has_unresolved_commission_claim = bool(
+        commission_text and "комисси" in commission_text.casefold().replace("ё", "е")
+    )
+    if (
+        status is CommissionStatus.UNKNOWN
+        and verified_no_commission
+        and not has_unresolved_commission_claim
+    ):
         status = CommissionStatus.NONE
         commission_value = 0
         commission_evidence = FieldEvidence.VERIFIED_FILTER
@@ -476,9 +484,10 @@ def parse_search_page(
     ]
     normalized_heading = (heading or "").casefold().replace("ё", "е")
     normalized_city = expected_city.casefold().replace("ё", "е")
+    city_marker = "москв" if normalized_city == "москва" else normalized_city
     context = AvitoSearchContext(
-        recognized=reader.primary_seen and normalized_city in normalized_heading,
-        city=expected_city if normalized_city in normalized_heading else None,
+        recognized=reader.primary_seen and city_marker in normalized_heading,
+        city=expected_city if city_marker in normalized_heading else None,
         long_term="длительн" in normalized_heading,
         no_commission=(
             base_parts.path.startswith(_SEARCH_PATH_PREFIX)

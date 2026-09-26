@@ -55,6 +55,8 @@ class PlaywrightBrowserTransport:
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._last_status_code: int | None = None
+        self._last_response_headers: Mapping[str, str] = {}
 
     async def __aenter__(self) -> PlaywrightBrowserTransport:
         await self.start()
@@ -99,12 +101,28 @@ class PlaywrightBrowserTransport:
                 await self._page.wait_for_load_state("networkidle", timeout=5_000)
             except PlaywrightTimeoutError:
                 pass
+            self._last_status_code = response.status if response is not None else None
+            self._last_response_headers = (
+                await response.all_headers() if response is not None else {}
+            )
             return BrowserPage(
-                status_code=response.status if response is not None else None,
+                status_code=self._last_status_code,
                 final_url=self._page.url,
                 html=await self._page.content(),
                 observed_at=datetime.now(UTC),
-                response_headers=(await response.all_headers() if response is not None else {}),
+                response_headers=self._last_response_headers,
+            )
+
+    async def current_page(self) -> BrowserPage | None:
+        async with self._lock:
+            if self._page is None:
+                return None
+            return BrowserPage(
+                status_code=self._last_status_code,
+                final_url=self._page.url,
+                html=await self._page.content(),
+                observed_at=datetime.now(UTC),
+                response_headers=self._last_response_headers,
             )
 
     async def screenshot(self) -> bytes | None:
@@ -128,6 +146,8 @@ class PlaywrightBrowserTransport:
     async def _close_context_unlocked(self) -> None:
         context, self._context = self._context, None
         self._page = None
+        self._last_status_code = None
+        self._last_response_headers = {}
         if context is not None:
             await context.close()
 

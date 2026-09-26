@@ -95,12 +95,12 @@ class SourceRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.failure_code, "collector_error")
 
     async def test_slow_source_does_not_delay_fast_source(self) -> None:
-        slow = RecordingCollector("yandex", delay=0.50)
+        slow = RecordingCollector("yandex", delay=1.00)
         fast = RecordingCollector("avito")
         stop_event = asyncio.Event()
 
         async def stop_later() -> None:
-            await asyncio.sleep(0.30)
+            await asyncio.sleep(0.60)
             stop_event.set()
 
         stopper = asyncio.create_task(stop_later())
@@ -108,7 +108,7 @@ class SourceRunnerTest(unittest.IsolatedAsyncioTestCase):
             await run_collectors(
                 (
                     CollectorRuntime(slow, object(), interval_seconds=0.05, jitter_seconds=0),
-                    CollectorRuntime(fast, object(), interval_seconds=0.04, jitter_seconds=0),
+                    CollectorRuntime(fast, object(), interval_seconds=0.02, jitter_seconds=0),
                 ),
                 CRITERIA,
                 self.repository,

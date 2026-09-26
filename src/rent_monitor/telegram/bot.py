@@ -11,9 +11,19 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Message,
+)
 
-from rent_monitor.core.models import Listing, Notification, SourceAlert
+from rent_monitor.browser.captcha import CaptchaSessionManager
+from rent_monitor.browser.transport import PlaywrightBrowserTransport
+from rent_monitor.core.models import Listing, Notification, SearchCriteria, SourceAlert
+from rent_monitor.core.scheduler import check_manual_attention_source
 from rent_monitor.core.source_state import SourceRunHealth
 from rent_monitor.storage.sqlite import SQLiteRepository
 from rent_monitor.transport import ALLOWED_HOSTS
@@ -44,9 +54,30 @@ class TelegramNotifier:
         )
 
     async def send_source_alert(self, chat_id: int, alert: SourceAlert) -> None:
+        keyboard = None
+        if (
+            alert.source == "avito"
+            and alert.health == "manual_attention"
+            and alert.failure_code == "captcha"
+        ):
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Открыть CAPTCHA",
+                            callback_data=f"captcha:open:{alert.source}",
+                        ),
+                        InlineKeyboardButton(
+                            text="Проверить",
+                            callback_data=f"captcha:check:{alert.source}",
+                        ),
+                    ]
+                ]
+            )
         await self.bot.send_message(
             chat_id=chat_id,
             text=format_source_alert(alert),
+            reply_markup=keyboard,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
 
@@ -54,6 +85,11 @@ class TelegramNotifier:
 def create_dispatcher(
     repository: SQLiteRepository,
     state_changed: asyncio.Event,
+    *,
+    browser: PlaywrightBrowserTransport | None = None,
+    captcha_manager: CaptchaSessionManager | None = None,
+    criteria: SearchCriteria | None = None,
+    avito_interval_seconds: float = 60.0,
 ) -> Dispatcher:
     router = Router(name="rent-monitor-owner")
 
@@ -83,6 +119,63 @@ def create_dispatcher(
         if message.chat.type != "private":
             return False
         return await repository.get_allowed_chat_id() == message.chat.id
+
+    async def require_owner_callback(callback: CallbackQuery) -> bool:
+        message = callback.message
+        if message is None or message.chat.type != "private":
+            return False
+        return await repository.get_allowed_chat_id() == message.chat.id
+
+    @router.callback_query(F.data == "captcha:open:avito")
+    async def open_captcha(callback: CallbackQuery) -> None:
+        if not await require_owner_callback(callback):
+            await callback.answer("Недоступно", show_alert=True)
+            return
+        if browser is None or captcha_manager is None or callback.message is None:
+            await callback.answer("Удалённый доступ не настроен", show_alert=True)
+            return
+        state = await repository.get_source_run_state("avito")
+        if state.health is not SourceRunHealth.MANUAL_ATTENTION:
+            await callback.answer("CAPTCHA уже не ожидается", show_alert=True)
+            return
+        session = await captcha_manager.issue("avito")
+        screenshot = await browser.screenshot()
+        if screenshot:
+            await callback.message.answer_photo(
+                BufferedInputFile(screenshot, filename="avito-captcha.png"),
+                caption="Текущее окно Avito перед подключением.",
+            )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Открыть окно Avito", url=session.url)]]
+        )
+        await callback.message.answer(
+            "Ссылка доступна 15 минут и работает только через ваш Tailscale.",
+            reply_markup=keyboard,
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "captcha:check:avito")
+    async def check_captcha(callback: CallbackQuery) -> None:
+        if not await require_owner_callback(callback):
+            await callback.answer("Недоступно", show_alert=True)
+            return
+        if browser is None or criteria is None:
+            await callback.answer("Проверка не настроена", show_alert=True)
+            return
+        resumed = await check_manual_attention_source(
+            "avito",
+            browser,
+            repository,
+            criteria,
+            normal_interval_seconds=avito_interval_seconds,
+        )
+        if not resumed:
+            await callback.answer("CAPTCHA ещё видна или страница не распознана", show_alert=True)
+            return
+        if captcha_manager is not None:
+            await captcha_manager.expire_all()
+        state_changed.set()
+        await callback.answer("Avito проверен, опрос возобновлён", show_alert=True)
 
     @router.message(Command("status"), F.chat.type == "private")
     async def status(message: Message) -> None:

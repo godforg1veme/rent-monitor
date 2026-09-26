@@ -24,6 +24,7 @@ from rent_monitor.core.source_state import (
     SourceTransition,
     transition_source_state,
 )
+from rent_monitor.parsers.avito import AvitoSearchContext, parse_search_page
 from rent_monitor.storage.sqlite import SQLiteRepository
 
 logger = logging.getLogger(__name__)
@@ -332,6 +333,61 @@ async def run_source_once(
     if transition.changed and on_transition is not None:
         await on_transition(transition)
     return transition
+
+
+async def check_manual_attention_source(
+    source: str,
+    browser: object,
+    repository: SQLiteRepository,
+    criteria: SearchCriteria,
+    *,
+    normal_interval_seconds: float = 60.0,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> bool:
+    """Inspect the current rendered page once and resume only a verified Avito context."""
+    previous = await repository.get_source_run_state(source)
+    if source != "avito" or previous.health is not SourceRunHealth.MANUAL_ATTENTION:
+        return False
+    current_page = getattr(browser, "current_page", None)
+    if not callable(current_page):
+        return False
+    page = await current_page()
+    if page is None or page.status_code != 200:
+        return False
+    parsed = parse_search_page(
+        page.html,
+        page.final_url,
+        expected_city=criteria.city,
+        observed_at=page.observed_at,
+    )
+    context = parsed.context
+    if (
+        parsed.blocked_reason is not None
+        or not parsed.recognized
+        or not isinstance(context, AvitoSearchContext)
+        or not context.recognized
+        or (criteria.require_no_commission and not context.no_commission)
+    ):
+        return False
+    source_ids = tuple(candidate.source_id for candidate in parsed.candidates)
+    transition = transition_source_state(
+        previous,
+        SourceOutcome.success(
+            card_count=len(source_ids),
+            newest_id=source_ids[0] if source_ids else None,
+        ),
+        now(),
+        normal_interval_seconds=normal_interval_seconds,
+    )
+    await repository.record_source_status(
+        source,
+        SourceHealth.OK,
+        attempted_at=transition.current.last_attempt_at,
+        successful_at=transition.current.last_success_at,
+    )
+    await repository.save_source_run_state(transition.current)
+    await repository.enqueue_source_transition(transition)
+    return True
 
 
 async def _wait_for_wakeup(

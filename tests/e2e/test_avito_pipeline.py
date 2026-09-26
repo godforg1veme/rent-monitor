@@ -62,7 +62,7 @@ def card(
 def search_page(
     *cards: str,
     heading: str = "Аренда квартир на длительный срок в Москве без комиссии",
-    selected_filters: tuple[str, ...] = (),
+    selected_filters: tuple[str, ...] = ("Без комиссии", "Сначала новые"),
     recommendations: str = "",
 ) -> str:
     filters = "".join(
@@ -219,9 +219,9 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
 
             second = await collector.collect(criteria, fixtures)
             await process_collection_result(second, criteria, repository)
-            self.assertEqual(await deliver_outbox_once(repository, notifier), 1)
-            self.assertEqual(notifier.chat_ids, [4242])
-            self.assertEqual(len(notifier.notifications), 1)
+            self.assertEqual(await deliver_outbox_once(repository, notifier), 2)
+            self.assertEqual(notifier.chat_ids, [4242, 4242])
+            self.assertEqual(len(notifier.notifications), 2)
             notification = notifier.notifications[0]
             self.assertEqual(notification.listing.source_id, matching_id)
             self.assertEqual(notification.listing.price_rub, 70_000)
@@ -235,7 +235,7 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
             duplicate = await collector.collect(criteria, fixtures)
             await process_collection_result(duplicate, criteria, repository)
             self.assertEqual(await deliver_outbox_once(repository, notifier), 0)
-            self.assertEqual(len(notifier.notifications), 1)
+            self.assertEqual(len(notifier.notifications), 2)
             self.assertEqual(fixtures.requests, 3)
         finally:
             await repository.close()
@@ -287,6 +287,7 @@ class AvitoParserTest(unittest.TestCase):
             search_page(
                 card("5555555555", details="Залог 60 000 ₽"),
                 heading="Квартиры",
+                selected_filters=(),
             ),
             SEARCH_URL,
         )

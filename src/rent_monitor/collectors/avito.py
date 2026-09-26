@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from rent_monitor.config import AvitoSearchConfig
 from rent_monitor.core.models import CollectionResult, Listing, SearchCriteria, SourceHealth
-from rent_monitor.parsers.avito import parse_search_page
+from rent_monitor.parsers.avito import AvitoSearchContext, parse_search_page
 
 if TYPE_CHECKING:
     from rent_monitor.browser.transport import PlaywrightBrowserTransport
@@ -107,7 +107,13 @@ class AvitoCollector:
                     parsed.blocked_reason,
                     page.observed_at,
                 )
-            if not parsed.recognized:
+            context = parsed.context
+            if (
+                not parsed.recognized
+                or not isinstance(context, AvitoSearchContext)
+                or not context.recognized
+                or (criteria.require_no_commission and not context.no_commission)
+            ):
                 return self._result(
                     (),
                     SourceHealth.DEGRADED,

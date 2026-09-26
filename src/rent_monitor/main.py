@@ -12,6 +12,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from rent_monitor.browser.captcha import CaptchaSessionManager
 from rent_monitor.browser.transport import PlaywrightBrowserTransport
 from rent_monitor.collectors import build_collectors
 from rent_monitor.config import ConfigurationError, load_config, read_telegram_token
@@ -37,14 +38,35 @@ async def serve(config_path: Path) -> None:
     await repository.initialize()
     state_changed = asyncio.Event()
     stop_event = asyncio.Event()
-    dispatcher = create_dispatcher(repository, state_changed)
     browser: PlaywrightBrowserTransport | None = None
+    captcha_manager: CaptchaSessionManager | None = None
 
     try:
         if any(collector.source == "avito" for collector in collectors):
             profile_path = config.database_path.parent / "avito-browser-profile"
             browser = PlaywrightBrowserTransport(profile_path, headless=False)
             await browser.start()
+        avito_config = next((source for source in config.sources if source.name == "avito"), None)
+        if config.captcha.enabled:
+            if browser is None or config.captcha.public_base_url is None:
+                raise ConfigurationError(
+                    "Для CAPTCHA нужны включённый Avito и captcha.public_base_url"
+                )
+            captcha_manager = CaptchaSessionManager(
+                config.captcha.token_directory,
+                config.captcha.public_base_url,
+            )
+            await captcha_manager.expire_all()
+        dispatcher = create_dispatcher(
+            repository,
+            state_changed,
+            browser=browser,
+            captcha_manager=captcha_manager,
+            criteria=config.criteria,
+            avito_interval_seconds=(
+                avito_config.poll_interval_seconds if avito_config is not None else 60
+            ),
+        )
         async with BoundedHttpClient(config.max_response_bytes) as client:
             source_configs = {source.name: source for source in config.sources}
             runtimes = tuple(
@@ -91,6 +113,8 @@ async def serve(config_path: Path) -> None:
                 logger.error("application phase=run status=error")
                 raise
     finally:
+        if captcha_manager is not None:
+            await captcha_manager.expire_all()
         if browser is not None:
             await browser.aclose()
         await bot.session.close()
