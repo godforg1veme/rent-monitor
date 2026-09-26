@@ -1,31 +1,22 @@
-"""Low-frequency HTTP collector for Avito's public long-term rental search."""
+"""Browser-backed collector for configured public Avito searches."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
-from rent_monitor.core.models import (
-    CollectionResult,
-    Listing,
-    SearchCriteria,
-    SourceHealth,
-)
+from rent_monitor.config import AvitoSearchConfig
+from rent_monitor.core.models import CollectionResult, Listing, SearchCriteria, SourceHealth
 from rent_monitor.parsers.avito import parse_search_page
 
 if TYPE_CHECKING:
-    from rent_monitor.transport import BoundedHttpClient
+    from rent_monitor.browser.transport import PlaywrightBrowserTransport
 
 
 SOURCE = "avito"
-# Observed in Avito's public interface: Moscow, two rooms, long-term rent,
-# no commission, sorted by date. The shared filter applies the 70,000 ₽ ceiling.
-SEARCH_URL = (
-    "https://www.avito.ru/moskva/kvartiry/sdam/na_dlitelnyy_srok/"
-    "bez_komissii-ASgBAgICA0SSA8gQ8AeQUp74DgI?s=104"
-)
 
 
 def _retry_after(headers: Mapping[str, str]) -> float | None:
@@ -46,65 +37,114 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
 
 
 class AvitoCollector:
-    """Collect only visible fields from the ordinary public Avito result page."""
+    """Render due search jobs sequentially and combine their visible cards."""
 
     source = SOURCE
 
-    def __init__(self) -> None:
-        self._paused_reason: str | None = None
-
-    def resume_after_manual_fix(self) -> None:
-        """Clear a source pause only after the public route/parser was reviewed."""
-        self._paused_reason = None
+    def __init__(
+        self,
+        searches: tuple[AvitoSearchConfig, ...],
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not searches:
+            raise ValueError("At least one Avito search must be configured")
+        self.searches = searches
+        self.interval_seconds = min(search.poll_interval_seconds for search in searches)
+        self._monotonic = monotonic
+        self._next_due: dict[str, float] = {}
+        self._seen_by_job: dict[str, tuple[str, ...]] = {}
 
     async def collect(
         self,
         criteria: SearchCriteria,
-        client: BoundedHttpClient,
+        client: PlaywrightBrowserTransport,
     ) -> CollectionResult:
         observed_at = datetime.now(UTC)
-        if self._paused_reason:
-            return self._result([], SourceHealth.PAUSED, self._paused_reason, observed_at)
-        if criteria.city.strip().casefold() != "москва" or criteria.rooms != 2:
-            return self._result([], SourceHealth.ERROR, "unsupported_search_criteria", observed_at)
-
-        try:
-            status_code, html, headers = await client.get_text(SEARCH_URL)
-        except Exception:
-            return self._result([], SourceHealth.ERROR, "transport_error", observed_at)
-
-        if status_code in {401, 403}:
-            self._paused_reason = "access_restricted"
-            return self._result([], SourceHealth.PAUSED, self._paused_reason, observed_at)
-        if status_code == 429:
+        now = self._monotonic()
+        due = [search for search in self.searches if self._next_due.get(search.name, 0) <= now]
+        if not due:
             return self._result(
-                [],
-                SourceHealth.DEGRADED,
-                "rate_limited",
+                (),
+                SourceHealth.OK,
+                None,
                 observed_at,
-                retry_after_seconds=_retry_after(headers),
+                seen_source_ids=self._all_seen_ids(),
             )
-        if status_code != 200:
-            return self._result([], SourceHealth.ERROR, "http_error", observed_at)
 
-        parsed = parse_search_page(html, SEARCH_URL)
-        if parsed.blocked_reason in {"captcha", "access_restricted"}:
-            self._paused_reason = parsed.blocked_reason
-            return self._result([], SourceHealth.PAUSED, self._paused_reason, observed_at)
-        if not parsed.recognized:
-            return self._result([], SourceHealth.DEGRADED, "unrecognized_structure", observed_at)
+        listings: list[Listing] = []
+        listed_ids: set[str] = set()
+        for search in due:
+            try:
+                page = await client.fetch(search.url)
+            except Exception:
+                return self._result((), SourceHealth.ERROR, "transport_error", observed_at)
 
-        listings = tuple(candidate.to_listing() for candidate in parsed.candidates)
+            status_code = page.status_code
+            if status_code in {401, 403}:
+                return self._result((), SourceHealth.PAUSED, "access_restricted", page.observed_at)
+            if status_code == 429:
+                return self._result(
+                    (),
+                    SourceHealth.DEGRADED,
+                    "rate_limited",
+                    page.observed_at,
+                    retry_after_seconds=_retry_after(page.response_headers),
+                )
+            if status_code != 200:
+                return self._result((), SourceHealth.ERROR, "http_error", page.observed_at)
+
+            parsed = parse_search_page(
+                page.html,
+                page.final_url,
+                expected_city=criteria.city,
+                observed_at=page.observed_at,
+            )
+            if parsed.blocked_reason in {"captcha", "access_restricted"}:
+                return self._result(
+                    (),
+                    SourceHealth.PAUSED,
+                    parsed.blocked_reason,
+                    page.observed_at,
+                )
+            if not parsed.recognized:
+                return self._result(
+                    (),
+                    SourceHealth.DEGRADED,
+                    "unrecognized_structure",
+                    page.observed_at,
+                )
+
+            job_ids = tuple(candidate.source_id for candidate in parsed.candidates)
+            self._seen_by_job[search.name] = job_ids
+            self._next_due[search.name] = now + search.poll_interval_seconds
+            for candidate in parsed.candidates:
+                if candidate.source_id in listed_ids:
+                    continue
+                listed_ids.add(candidate.source_id)
+                listings.append(candidate.to_listing())
+            observed_at = page.observed_at
+
         return self._result(
             listings,
             SourceHealth.OK,
             None,
             observed_at,
-            seen_source_ids=tuple(candidate.source_id for candidate in parsed.candidates),
+            seen_source_ids=self._all_seen_ids(),
         )
 
+    def _all_seen_ids(self) -> tuple[str, ...]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for search in self.searches:
+            for source_id in self._seen_by_job.get(search.name, ()):
+                if source_id not in seen:
+                    seen.add(source_id)
+                    ordered.append(source_id)
+        return tuple(ordered)
+
+    @staticmethod
     def _result(
-        self,
         listings: Sequence[Listing],
         status: SourceHealth,
         failure_code: str | None,

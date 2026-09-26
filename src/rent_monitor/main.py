@@ -12,6 +12,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from rent_monitor.browser.transport import PlaywrightBrowserTransport
 from rent_monitor.collectors import build_collectors
 from rent_monitor.config import ConfigurationError, load_config, read_telegram_token
 from rent_monitor.core.scheduler import CollectorRuntime, run_collectors, run_outbox_worker
@@ -37,14 +38,19 @@ async def serve(config_path: Path) -> None:
     state_changed = asyncio.Event()
     stop_event = asyncio.Event()
     dispatcher = create_dispatcher(repository, state_changed)
+    browser: PlaywrightBrowserTransport | None = None
 
     try:
+        if any(collector.source == "avito" for collector in collectors):
+            profile_path = config.database_path.parent / "avito-browser-profile"
+            browser = PlaywrightBrowserTransport(profile_path, headless=False)
+            await browser.start()
         async with BoundedHttpClient(config.max_response_bytes) as client:
             source_configs = {source.name: source for source in config.sources}
             runtimes = tuple(
                 CollectorRuntime(
                     collector=collector,
-                    client=client,
+                    client=browser if collector.source == "avito" else client,
                     interval_seconds=source_configs[collector.source].poll_interval_seconds,
                 )
                 for collector in collectors
@@ -85,6 +91,8 @@ async def serve(config_path: Path) -> None:
                 logger.error("application phase=run status=error")
                 raise
     finally:
+        if browser is not None:
+            await browser.aclose()
         await bot.session.close()
         await repository.close()
 

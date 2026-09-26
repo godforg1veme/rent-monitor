@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -30,6 +31,7 @@ class BrowserPage:
     html: str
     observed_at: datetime
     screenshot_png: bytes | None = None
+    response_headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class PlaywrightBrowserTransport:
@@ -102,6 +104,7 @@ class PlaywrightBrowserTransport:
                 final_url=self._page.url,
                 html=await self._page.content(),
                 observed_at=datetime.now(UTC),
+                response_headers=(await response.all_headers() if response is not None else {}),
             )
 
     async def screenshot(self) -> bytes | None:

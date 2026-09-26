@@ -22,7 +22,15 @@ def build_collectors(config: RuntimeConfig) -> list[Collector]:
         "domclick": DomclickCollector,
         "yandex": YandexCollector,
     }
-    return [factories[source.name]() for source in config.sources if source.enabled]
+    collectors: list[Collector] = []
+    for source in config.sources:
+        if not source.enabled:
+            continue
+        if source.name == "avito":
+            collectors.append(AvitoCollector(source.searches))
+        else:
+            collectors.append(factories[source.name]())
+    return collectors
 
 
 __all__ = [

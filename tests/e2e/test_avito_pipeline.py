@@ -7,11 +7,10 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
 
-import httpx
-
-from rent_monitor.collectors.avito import SEARCH_URL, AvitoCollector
+from rent_monitor.browser.transport import BrowserPage
+from rent_monitor.collectors.avito import AvitoCollector
+from rent_monitor.config import AvitoSearchConfig
 from rent_monitor.core.models import (
     CommissionStatus,
     FieldEvidence,
@@ -21,7 +20,12 @@ from rent_monitor.core.models import (
 from rent_monitor.core.scheduler import deliver_outbox_once, process_collection_result
 from rent_monitor.parsers.avito import parse_search_page
 from rent_monitor.storage.sqlite import SQLiteRepository
-from rent_monitor.transport import BoundedHttpClient
+
+SEARCH_URL = (
+    "https://www.avito.ru/moskva/kvartiry/sdam/na_dlitelnyy_srok/"
+    "bez_komissii-ASgBAgICA0SSA8gQ8AeQUp74DgI?s=104"
+)
+SEARCH = AvitoSearchConfig("main", SEARCH_URL, 60)
 
 
 def card(
@@ -76,29 +80,24 @@ def search_page(
     """
 
 
-class FixtureTransport:
+class FixtureBrowser:
     def __init__(self, pages: list[str | tuple[int, str]]) -> None:
         self.pages = pages
         self.requests = 0
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
+    async def fetch(self, url: str) -> BrowserPage:
         self.requests += 1
-        if request.url.host != "www.avito.ru" and request.url.host != "avito.ru":
-            raise AssertionError(f"Unexpected fixture host: {request.url.host}")
-        if request.url.path != urlsplit(SEARCH_URL).path:
-            raise AssertionError(f"Unexpected fixture path: {request.url.path}")
-        if request.url.query != b"s=104":
-            raise AssertionError(f"Unexpected search parameters: {request.url.query}")
-        if "cookie" in request.headers:
-            raise AssertionError("Public-page requests must not send cookies")
+        if url != SEARCH_URL:
+            raise AssertionError(f"Unexpected fixture URL: {url}")
 
         fixture = self.pages[min(self.requests - 1, len(self.pages) - 1)]
         status, body = fixture if isinstance(fixture, tuple) else (200, fixture)
-        return httpx.Response(
-            status,
-            text=body,
-            headers={"content-type": "text/html; charset=utf-8"},
-            request=request,
+        return BrowserPage(
+            status_code=status,
+            final_url=url,
+            html=body,
+            observed_at=datetime.now(UTC),
+            response_headers={"content-type": "text/html; charset=utf-8"},
         )
 
 
@@ -113,6 +112,32 @@ class FakeTelegramSender:
 
 
 class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_avito_baseline_survives_browser_collector_upgrade(self) -> None:
+        criteria = SearchCriteria("Москва", 2, 70_000, True)
+        source_id = "1111111111"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "monitor.sqlite3"
+            repository = SQLiteRepository(path)
+            await repository.initialize()
+            await repository.record_baseline_candidates("avito", (source_id,))
+            await repository.set_source_baseline("avito", complete=True)
+            await repository.bind_chat_id(4242)
+            await repository.close()
+
+            repository = SQLiteRepository(path)
+            await repository.initialize()
+            collector = AvitoCollector((SEARCH,))
+            result = await collector.collect(
+                criteria,
+                FixtureBrowser([search_page(card(source_id))]),
+            )
+            await process_collection_result(result, criteria, repository)
+            delivered = await deliver_outbox_once(repository, FakeTelegramSender())
+            await repository.close()
+
+        self.assertEqual(result.source, "avito")
+        self.assertEqual(delivered, 0)
+
     async def test_legacy_database_adds_evidence_columns_independently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.sqlite3"
@@ -160,7 +185,7 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
         commission_id = "4444444444"
         unknown_fee_id = "5555555555"
         baseline = card(baseline_id, price="60\u00a0000")
-        fixtures = FixtureTransport(
+        fixtures = FixtureBrowser(
             [
                 search_page(baseline),
                 search_page(
@@ -182,61 +207,59 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
         repository = SQLiteRepository(":memory:")
         await repository.initialize()
         await repository.bind_chat_id(4242)
-        collector = AvitoCollector()
+        clock = iter((0.0, 60.0, 120.0))
+        collector = AvitoCollector((SEARCH,), monotonic=clock.__next__)
         notifier = FakeTelegramSender()
 
         try:
-            async with BoundedHttpClient(transport=httpx.MockTransport(fixtures)) as client:
-                first = await collector.collect(criteria, client)
-                self.assertEqual(first.status, SourceHealth.OK)
-                await process_collection_result(first, criteria, repository)
-                self.assertEqual(await deliver_outbox_once(repository, notifier), 0)
+            first = await collector.collect(criteria, fixtures)
+            self.assertEqual(first.status, SourceHealth.OK)
+            await process_collection_result(first, criteria, repository)
+            self.assertEqual(await deliver_outbox_once(repository, notifier), 0)
 
-                second = await collector.collect(criteria, client)
-                await process_collection_result(second, criteria, repository)
-                self.assertEqual(await deliver_outbox_once(repository, notifier), 1)
-                self.assertEqual(notifier.chat_ids, [4242])
-                self.assertEqual(len(notifier.notifications), 1)
-                notification = notifier.notifications[0]
-                self.assertEqual(notification.listing.source_id, matching_id)
-                self.assertEqual(notification.listing.price_rub, 70_000)
-                self.assertEqual(notification.listing.commission_status, "none")
-                self.assertEqual(
-                    notification.listing.commission_evidence,
-                    FieldEvidence.EXPLICIT_CARD,
-                )
-                self.assertNotIn("описание карточки", str(notification.listing))
+            second = await collector.collect(criteria, fixtures)
+            await process_collection_result(second, criteria, repository)
+            self.assertEqual(await deliver_outbox_once(repository, notifier), 1)
+            self.assertEqual(notifier.chat_ids, [4242])
+            self.assertEqual(len(notifier.notifications), 1)
+            notification = notifier.notifications[0]
+            self.assertEqual(notification.listing.source_id, matching_id)
+            self.assertEqual(notification.listing.price_rub, 70_000)
+            self.assertEqual(notification.listing.commission_status, "none")
+            self.assertEqual(
+                notification.listing.commission_evidence,
+                FieldEvidence.EXPLICIT_CARD,
+            )
+            self.assertNotIn("описание карточки", str(notification.listing))
 
-                duplicate = await collector.collect(criteria, client)
-                await process_collection_result(duplicate, criteria, repository)
-                self.assertEqual(await deliver_outbox_once(repository, notifier), 0)
-                self.assertEqual(len(notifier.notifications), 1)
-                self.assertEqual(fixtures.requests, 3)
+            duplicate = await collector.collect(criteria, fixtures)
+            await process_collection_result(duplicate, criteria, repository)
+            self.assertEqual(await deliver_outbox_once(repository, notifier), 0)
+            self.assertEqual(len(notifier.notifications), 1)
+            self.assertEqual(fixtures.requests, 3)
         finally:
             await repository.close()
 
-    async def test_visible_captcha_pauses_without_retrying_source(self) -> None:
+    async def test_visible_captcha_can_recover_on_next_attempt(self) -> None:
         criteria = SearchCriteria("Москва", 2, 70_000, True)
         blocked_page = "<html><body><h1>Подтвердите, что вы не робот</h1></body></html>"
-        fixtures = FixtureTransport([blocked_page, search_page(card("9999999999"))])
-        collector = AvitoCollector()
+        fixtures = FixtureBrowser([blocked_page, search_page(card("9999999999"))])
+        collector = AvitoCollector((SEARCH,))
 
-        async with BoundedHttpClient(transport=httpx.MockTransport(fixtures)) as client:
-            first = await collector.collect(criteria, client)
-            second = await collector.collect(criteria, client)
+        first = await collector.collect(criteria, fixtures)
+        second = await collector.collect(criteria, fixtures)
 
         self.assertEqual(first.status, SourceHealth.PAUSED)
         self.assertEqual(first.failure_code, "captcha")
-        self.assertEqual(second.status, SourceHealth.PAUSED)
-        self.assertEqual(fixtures.requests, 1)
+        self.assertEqual(second.status, SourceHealth.OK)
+        self.assertEqual(fixtures.requests, 2)
 
     async def test_forbidden_response_pauses_and_honors_no_cookie_policy(self) -> None:
         criteria = SearchCriteria("Москва", 2, 70_000, True)
-        fixtures = FixtureTransport([(403, "")])
-        collector = AvitoCollector()
+        fixtures = FixtureBrowser([(403, "")])
+        collector = AvitoCollector((SEARCH,))
 
-        async with BoundedHttpClient(transport=httpx.MockTransport(fixtures)) as client:
-            result = await collector.collect(criteria, client)
+        result = await collector.collect(criteria, fixtures)
 
         self.assertEqual(result.status, SourceHealth.PAUSED)
         self.assertEqual(result.failure_code, "access_restricted")
