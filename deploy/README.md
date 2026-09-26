@@ -21,7 +21,7 @@ tar -xzf /tmp/rent-monitor-<sha>.tar.gz -C /tmp/rent-monitor-release
 sudo /tmp/rent-monitor-release/deploy/install.sh /tmp/rent-monitor-release <sha>
 ```
 
-Установщик создаёт отдельный release-каталог, строго синхронизирует зависимости по `uv.lock`, устанавливает Chromium Playwright, Xvfb, x11vnc, noVNC/websockify и два systemd unit. Если Tailscale ещё не установлен, используется официальный установщик Tailscale. При отсутствии Telegram-токена основной сервис останется выключенным, а локальный CAPTCHA-стек будет готов к настройке.
+Установщик создаёт отдельный release-каталог, строго синхронизирует зависимости по `uv.lock`, устанавливает Chromium Playwright в доступный сервисному пользователю каталог `/opt/rent-monitor/playwright`, добавляет Xvfb, x11vnc, noVNC/websockify и два systemd unit. Если Tailscale ещё не установлен, используется официальный установщик Tailscale. При отсутствии Telegram-токена основной сервис останется выключенным, а локальный CAPTCHA-стек будет готов к настройке.
 
 При обновлении уже работающей установки скрипт сохраняет системный Telegram credential и базу в `/var/lib/rent-monitor`; повторная привязка чата не нужна. Не запускайте второй экземпляр long polling с тем же токеном.
 

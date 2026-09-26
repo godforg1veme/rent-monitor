@@ -14,6 +14,7 @@ StateDirectory=rent-monitor
 StateDirectoryMode=0750
 Environment=RENT_MONITOR_DATABASE=/var/lib/rent-monitor/rent-monitor.sqlite3
 Environment=DISPLAY=:99
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/rent-monitor/playwright
 Environment=RENT_MONITOR_CAPTCHA_TOKEN_DIRECTORY=/run/rent-monitor-captcha/tokens
 EnvironmentFile=-/etc/rent-monitor/environment
 Environment=PYTHONDONTWRITEBYTECODE=1

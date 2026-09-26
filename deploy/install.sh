@@ -107,11 +107,15 @@ if [[ -L "$RELEASE/.venv" ]]; then
     exit 1
 fi
 UV_ENV="$APP_ROOT/.uv-installer"
+PLAYWRIGHT_ROOT="$APP_ROOT/playwright"
 python3 -m venv --clear "$UV_ENV"
 "$UV_ENV/bin/python" -m pip install --disable-pip-version-check 'uv==0.12.15'
 "$UV_ENV/bin/uv" sync --locked --project "$RELEASE" --python "$(command -v python3)"
-"$RELEASE/.venv/bin/playwright" install chromium
+install -d -o root -g root -m 0755 "$PLAYWRIGHT_ROOT"
+PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_ROOT" \
+    "$RELEASE/.venv/bin/playwright" install chromium
 "$RELEASE/.venv/bin/playwright" install-deps chromium
+chmod -R a+rX "$PLAYWRIGHT_ROOT"
 chmod 0755 "$RELEASE/deploy/run-captcha-stack.sh"
 
 temporary_link="$APP_ROOT/.current-$REVISION"
