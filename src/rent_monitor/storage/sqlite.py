@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import re
 import secrets
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS listings (
     price_evidence TEXT NOT NULL DEFAULT 'unknown',
     rooms_evidence TEXT NOT NULL DEFAULT 'unknown',
     commission_evidence TEXT NOT NULL DEFAULT 'unknown',
+    details_json TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     PRIMARY KEY (source, source_id)
@@ -191,6 +193,7 @@ def _listing_values(listing: Listing) -> tuple[object, ...]:
         listing.price_evidence.value,
         listing.rooms_evidence.value,
         listing.commission_evidence.value,
+        json.dumps(listing.details, ensure_ascii=False) if listing.details else None,
     )
 
 
@@ -214,6 +217,7 @@ def _listing_from_row(row: aiosqlite.Row) -> Listing:
         price_evidence=FieldEvidence(row["price_evidence"]),
         rooms_evidence=FieldEvidence(row["rooms_evidence"]),
         commission_evidence=FieldEvidence(row["commission_evidence"]),
+        details=json.loads(row["details_json"]) if row["details_json"] else None,
     )
 
 
@@ -275,12 +279,23 @@ class SQLiteRepository:
                 await connection.execute(
                     f"ALTER TABLE listings ADD COLUMN {column} TEXT NOT NULL DEFAULT 'unknown'"
                 )
+        if "details_json" not in existing:
+            await connection.execute("ALTER TABLE listings ADD COLUMN details_json TEXT")
 
     async def close(self) -> None:
         async with self._lock:
             if self._connection is not None:
                 await self._connection.close()
                 self._connection = None
+
+    async def get_listing(self, source: str, source_id: str) -> Listing | None:
+        async with self._lock:
+            cursor = await self._db().execute(
+                "SELECT * FROM listings WHERE source=? AND source_id=?", (source, source_id)
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+        return _listing_from_row(row) if row is not None else None
 
     def _db(self) -> aiosqlite.Connection:
         if self._connection is None:
@@ -330,6 +345,7 @@ class SQLiteRepository:
                    rooms=?, area_m2=?, metro=?, metro_minutes=?, seller_type=?,
                    commission_status=?, commission_value=?, commission_unit=?, published_at=?,
                    price_evidence=?, rooms_evidence=?, commission_evidence=?,
+                   details_json=COALESCE(?, details_json),
                    last_seen_at=? WHERE source=? AND source_id=?""",
                 (*values[2:], now, listing.source, listing.source_id),
             )
@@ -345,8 +361,9 @@ class SQLiteRepository:
                    source, source_id, group_id, url, price_rub, title, address, address_norm,
                    rooms, area_m2, metro, metro_minutes, seller_type, commission_status,
                    commission_value, commission_unit, published_at, price_evidence,
-                   rooms_evidence, commission_evidence, first_seen_at, last_seen_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   rooms_evidence, commission_evidence, details_json, first_seen_at, last_seen_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             ?)""",
                 (listing.source, listing.source_id, group_id, *values[2:], now, now),
             )
             is_new = True

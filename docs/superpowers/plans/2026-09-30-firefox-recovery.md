@@ -1,3 +1,5 @@
+> Исторический документ. С 6 октября 2026 актуален домашний маршрут: [текущее состояние](../../home-route-status.md).
+
 # Firefox recovery implementation plan
 
 **Goal:** Restore actual Avito discovery and delivery through the existing bot.

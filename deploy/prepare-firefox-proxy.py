@@ -9,10 +9,14 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 profile = root / "data/firefox-avito-copy"
-subprocess.run([
-    "ssh", "jarvis-vps-new",
-    "sudo test ! -f /var/lib/rent-monitor/avito-firefox-profile/prefs.js",
-], check=True)
+subprocess.run(
+    [
+        "ssh",
+        "jarvis-vps-new",
+        "sudo test ! -f /var/lib/rent-monitor/avito-firefox-profile/prefs.js",
+    ],
+    check=True,
+)
 configuration = subprocess.run(
     ["ssh", "jarvis-vps", "sudo cat /etc/personal-proxy/3proxy.cfg"],
     capture_output=True,

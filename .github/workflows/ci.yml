@@ -36,7 +36,7 @@ jobs:
         run: uv sync --locked
 
       - name: Run end-to-end pipeline
-        run: uv run --locked python -m unittest discover -s tests/e2e -v
+        run: uv run --locked pytest tests/unit tests/e2e -q
 
       - name: Check Python style
         run: uv run --locked ruff check .

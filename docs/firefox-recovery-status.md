@@ -1,3 +1,5 @@
+> Исторический документ. С 6 октября 2026 актуален домашний маршрут: [текущее состояние](home-route-status.md).
+
 # Firefox recovery — 2026-09-30
 
 The existing bot runs autonomously on Germany (`jarvis-vps`), using installed Mozilla

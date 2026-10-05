@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
 from rent_monitor.config import AvitoSearchConfig
+from rent_monitor.core.filters import matches_listing
 from rent_monitor.core.models import CollectionResult, Listing, SearchCriteria, SourceHealth
 from rent_monitor.parsers.avito import AvitoSearchContext, parse_search_page
+from rent_monitor.parsers.avito_detail import parse_detail
 
 if TYPE_CHECKING:
     from rent_monitor.browser.transport import BrowserTransport
@@ -54,6 +61,8 @@ class AvitoCollector:
         self._monotonic = monotonic
         self._next_due: dict[str, float] = {}
         self._seen_by_job: dict[str, tuple[str, ...]] = {}
+        self.repository = None
+        self.detail_cache_directory = None
 
     async def collect(
         self,
@@ -77,7 +86,13 @@ class AvitoCollector:
         for search in due:
             try:
                 page = await client.fetch(search.url)
-            except Exception:
+            except Exception as exc:
+                from rent_monitor.browser.home_pow import HomeRouteUnavailable
+
+                if isinstance(exc, HomeRouteUnavailable):
+                    return self._result(
+                        (), SourceHealth.DEGRADED, "home_route_unavailable", observed_at
+                    )
                 return self._result((), SourceHealth.ERROR, "transport_error", observed_at)
 
             status_code = page.status_code
@@ -134,6 +149,86 @@ class AvitoCollector:
                 listed_ids.add(candidate.source_id)
                 listings.append(candidate.to_listing())
             observed_at = page.observed_at
+
+        detail_failure = False
+        if self.repository is not None and os.environ.get("RENT_MONITOR_COLLECT_DETAILS") == "1":
+            baseline = await self.repository.has_source_baseline(SOURCE)
+            enriched = []
+            detail_requests = 0
+            for listing in listings:
+                existing = await self.repository.get_listing(SOURCE, listing.source_id)
+                if existing is not None and existing.details:
+                    enriched.append(replace(listing, details=existing.details))
+                    continue
+                if not baseline or not matches_listing(listing, criteria):
+                    enriched.append(listing)
+                    continue
+                if await self.repository.is_baseline_candidate(SOURCE, listing.source_id):
+                    enriched.append(listing)
+                    continue
+                cache_path = self.detail_cache_directory / f"{listing.source_id}.json"
+                details = None
+                if cache_path.exists():
+                    try:
+                        details = json.loads(cache_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        pass
+                if details is None:
+                    if detail_requests >= 5:
+                        continue  # Remains absent from DB, so the next cycle retries.
+                    detail_requests += 1
+                    try:
+                        await asyncio.sleep(15)
+                        if hasattr(client, "fetch_listing"):
+                            detail_page = await client.fetch_listing(listing.source_id, listing.url)
+                        else:
+                            detail_page = await client.fetch(listing.url)
+                        details = parse_detail(
+                            detail_page.html, listing.source_id, detail_page.final_url
+                        )
+                    except Exception as exc:
+                        from rent_monitor.browser.home_pow import HomeRouteUnavailable
+
+                        if isinstance(exc, HomeRouteUnavailable):
+                            return self._result(
+                                (),
+                                SourceHealth.DEGRADED,
+                                "home_route_unavailable",
+                                observed_at,
+                                seen_source_ids=self._all_seen_ids(),
+                            )
+                        details = None
+                    if details is None:
+                        detail_failure = True
+                        logging.getLogger(__name__).warning(
+                            "source=avito phase=detail status=unavailable id=%s", listing.source_id
+                        )
+                        break  # Stop paid detail requests until the next cycle.
+                    self.detail_cache_directory.mkdir(parents=True, exist_ok=True)
+                    temporary = cache_path.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(details, ensure_ascii=False), encoding="utf-8")
+                    temporary.replace(cache_path)
+                label = details.get("seller_type_label", "").casefold()
+                from rent_monitor.core.models import SellerType
+
+                seller_type = (
+                    SellerType.AGENCY
+                    if "агент" in label
+                    else SellerType.PRIVATE
+                    if "частн" in label
+                    else listing.seller_type
+                )
+                enriched.append(replace(listing, details=details, seller_type=seller_type))
+            listings = enriched
+
+        if detail_failure:
+            return self._result(
+                (),
+                SourceHealth.DEGRADED,
+                "detail_unavailable",
+                observed_at,
+                seen_source_ids=self._all_seen_ids(),
+            )
 
         return self._result(
             listings,

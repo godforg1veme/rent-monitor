@@ -12,7 +12,7 @@ enabled = true
 
 [[sources.avito.searches]]
 name = "moscow-rent"
-url = "https://www.avito.ru/moskva/kvartiry/sdam/na_dlitelnyy_srok/bez_komissii-ASgBAgICA0SSA8gQ8AeQUp74DgI?s=104"
+url = "https://www.avito.ru/moskva/kvartiry/sdam/na_dlitelnyy_srok/bez_komissii-ASgBAgICA0SSA8gQ8AeQUp74DgI?cd=1&context=H4sIAAAAAAAA_wFUAKv_YTozOntzOjg6ImZyb21QYWdlIjtzOjU6InNzZmF2IjtzOjk6ImZyb21fcGFnZSI7czo1OiJzc2ZhdiI7czo3OiJyZWZlcmVyIjtzOjI6InNwIjt9zaGOM1QAAAA&f=ASgBAgECBUSSA8gQ8AeQUswIkFnm8A7wpeMCnvgOAgFFxpoMGXsiZnJvbSI6NjAwMDAsInRvIjo3MDAwMH0&footWalkingMetro=30&s=104"
 poll_interval_seconds = 60
 
 [sources.yandex]
@@ -28,7 +28,7 @@ enabled = false
 poll_interval_seconds = 300
 
 [captcha]
-enabled = true
+enabled = false
 token_directory = "/run/rent-monitor-captcha/tokens"
 
 [database]

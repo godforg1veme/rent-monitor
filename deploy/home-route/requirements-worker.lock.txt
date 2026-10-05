@@ -1,0 +1,18 @@
+# Exact versions from the verified Linux worker on 2026-10-06.
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.2
+curl_cffi==0.16.3
+ddddocr==1.6.1
+flatbuffers==25.12.19
+idna==3.20
+numpy==2.5.3
+onnxruntime==1.30.0
+opencv-python-headless==5.0.0.93
+packaging==26.3
+pillow==12.3.0
+protobuf==7.36.2
+pycparser==3.0
+pycryptodome==3.24.0
+requests==2.34.2
+urllib3==2.8.0

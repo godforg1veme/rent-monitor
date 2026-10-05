@@ -37,6 +37,10 @@ async def serve(config_path: Path) -> None:
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     repository = SQLiteRepository(config.database_path)
     await repository.initialize()
+    for collector in collectors:
+        if collector.source == "avito":
+            collector.repository = repository
+            collector.detail_cache_directory = config.database_path.parent / "avito-detail-cache"
     state_changed = asyncio.Event()
     stop_event = asyncio.Event()
     browser: BrowserTransport | None = None

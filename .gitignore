@@ -19,3 +19,9 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 .worktrees/
+deploy/home-route/vendor/
+deploy/home-route/.venv/
+private-diagnostics/
+firewall-debug-responses/
+home-route-state/
+processes.json

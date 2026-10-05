@@ -141,6 +141,10 @@ def _failure_schedule(
     failure_count: int,
     retry_after_seconds: float | None,
 ) -> tuple[SourceRunHealth, float | None]:
+    if failure_code == "home_route_unavailable":
+        return SourceRunHealth.DEGRADED, 60
+    if failure_code == "detail_unavailable":
+        return SourceRunHealth.COOLDOWN, min(15 * 60 * failure_count, 60 * 60)
     if failure_code in {"captcha", "human_verification"}:
         return SourceRunHealth.MANUAL_ATTENTION, None
 

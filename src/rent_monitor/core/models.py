@@ -82,6 +82,7 @@ class Listing:
     price_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
     rooms_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
     commission_evidence: FieldEvidence | str = FieldEvidence.UNKNOWN
+    details: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.source.strip() or not self.source_id.strip() or not self.url.strip():

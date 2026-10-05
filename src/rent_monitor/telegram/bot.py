@@ -46,12 +46,41 @@ class TelegramNotifier:
                     [InlineKeyboardButton(text=f"Открыть на {item.source}", url=safe_url)]
                 )
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        if notification.listing.details and notification.listing.details.get("description"):
+            from rent_monitor.telegram.detail_format import format_messages
+
+            messages = format_messages(notification.listing, notification.listing.details, "new")
+            for index, text in enumerate(messages):
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard if index == len(messages) - 1 else None,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                )
+            return
         await self.bot.send_message(
             chat_id=chat_id,
             text=format_notification(notification.listing, notification.alternatives),
             reply_markup=keyboard if keyboard.inline_keyboard else None,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
+        details = notification.listing.details or {}
+        if details.get("description"):
+            document = full_listing_text(notification.listing)
+            if (
+                len(format_notification(notification.listing, notification.alternatives))
+                + len(html.escape(details["description"]))
+                > 3800
+            ):
+                await self.bot.send_document(
+                    chat_id=chat_id,
+                    document=BufferedInputFile(
+                        document.encode("utf-8"),
+                        filename=f"avito-{notification.listing.source_id}.txt",
+                    ),
+                    caption="Полный текст и характеристики объявления",
+                )
 
     async def send_source_alert(self, chat_id: int, alert: SourceAlert) -> None:
         keyboard = None
@@ -160,9 +189,7 @@ def create_dispatcher(
             "Текущее окно Avito. Включите Tailscale на телефоне. Ссылка действует 15 минут. "
             "Открытие окна не снимает паузу при ограничении IP.",
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="Открыть окно Avito", url=session.url)]
-                ]
+                inline_keyboard=[[InlineKeyboardButton(text="Открыть окно Avito", url=session.url)]]
             ),
         )
 
@@ -314,6 +341,51 @@ def format_notification(listing: Listing, alternatives: tuple[Listing, ...] = ()
         "Источник: "
         + ", ".join(html.escape(_source_label(source)) for source in dict.fromkeys(sources))
     )
+    details = listing.details or {}
+    if details:
+        if listing.title:
+            lines[0] = f"<b>{html.escape(listing.title[:200])}</b>"
+        extra = [f"ID: {listing.source_id}"]
+        for key, label in (
+            ("published_label", "Опубликовано"),
+            ("seller_name", "Продавец"),
+            ("seller_type_label", "Тип продавца"),
+            ("seller_rating", "Рейтинг"),
+        ):
+            if details.get(key):
+                extra.append(f"{label}: {html.escape(str(details[key])[:200])}")
+        for key, value in details.get("characteristics", {}).items():
+            extra.append(f"{html.escape(key[:120])}: {html.escape(str(value)[:200])}")
+        for line in extra:
+            if len("\n".join(lines)) + len(line) < 3000:
+                lines.append(line)
+        description = details.get("description", "")
+        escaped_description = html.escape(description)
+        if len("\n".join(lines)) + len(escaped_description) < 3800:
+            lines.append("\n" + escaped_description)
+        elif description:
+            lines.append("\nПолное описание — в текстовом файле ниже.")
+    return "\n".join(lines)
+
+
+def full_listing_text(listing: Listing) -> str:
+    details = listing.details or {}
+    lines = [
+        listing.title or "Объявление",
+        listing.url,
+        f"ID: {listing.source_id}",
+        f"Цена: {listing.price_rub} ₽",
+        f"Адрес: {listing.address or 'не указан'}",
+    ]
+    for key, label in (
+        ("published_label", "Опубликовано"),
+        ("seller_info", "Продавец"),
+        ("seller_url", "Профиль продавца"),
+    ):
+        if details.get(key):
+            lines.append(f"{label}: {details[key]}")
+    lines.extend(f"{key}: {value}" for key, value in details.get("characteristics", {}).items())
+    lines.extend(("", details.get("description", "")))
     return "\n".join(lines)
 
 
