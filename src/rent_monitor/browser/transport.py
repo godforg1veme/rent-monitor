@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import urlsplit
 
 from playwright.async_api import (
@@ -32,6 +33,15 @@ class BrowserPage:
     observed_at: datetime
     screenshot_png: bytes | None = None
     response_headers: Mapping[str, str] = field(default_factory=dict)
+
+
+class BrowserTransport(Protocol):
+    async def start(self) -> None: ...
+    async def fetch(self, url: str) -> BrowserPage: ...
+    async def current_page(self) -> BrowserPage | None: ...
+    async def screenshot(self) -> bytes | None: ...
+    async def restart(self) -> None: ...
+    async def aclose(self) -> None: ...
 
 
 class PlaywrightBrowserTransport:
@@ -85,6 +95,15 @@ class PlaywrightBrowserTransport:
         self._page = (
             self._context.pages[0] if self._context.pages else await self._context.new_page()
         )
+        self._page.on("response", self._observe_navigation_response)
+
+    def _observe_navigation_response(self, response) -> None:
+        if (
+            self._page is not None
+            and response.request.is_navigation_request()
+            and response.frame == self._page.main_frame
+        ):
+            self._last_status_code = response.status
 
     async def fetch(self, url: str) -> BrowserPage:
         self._validate_url(url)

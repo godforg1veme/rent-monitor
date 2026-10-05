@@ -138,6 +138,12 @@ class AvitoCollectorTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_classifies_http_and_transport_failures(self) -> None:
         cases = (
+            (
+                page("<body>нажмите Продолжить для решения капчи</body>", URL_ONE, status=429),
+                SourceHealth.PAUSED,
+                "captcha",
+                None,
+            ),
             (page("", URL_ONE, status=403), SourceHealth.PAUSED, "access_restricted", None),
             (
                 page("", URL_ONE, status=429, headers={"retry-after": "90"}),

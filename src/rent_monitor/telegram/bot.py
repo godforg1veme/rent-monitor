@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 
 from rent_monitor.browser.captcha import CaptchaSessionManager
-from rent_monitor.browser.transport import PlaywrightBrowserTransport
+from rent_monitor.browser.transport import BrowserTransport
 from rent_monitor.core.models import Listing, Notification, SearchCriteria, SourceAlert
 from rent_monitor.core.scheduler import check_manual_attention_source
 from rent_monitor.core.source_state import SourceRunHealth
@@ -58,7 +58,7 @@ class TelegramNotifier:
         if (
             alert.source == "avito"
             and alert.health == "manual_attention"
-            and alert.failure_code == "captcha"
+            and alert.failure_code in {"captcha", "human_verification"}
         ):
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -86,10 +86,11 @@ def create_dispatcher(
     repository: SQLiteRepository,
     state_changed: asyncio.Event,
     *,
-    browser: PlaywrightBrowserTransport | None = None,
+    browser: BrowserTransport | None = None,
     captcha_manager: CaptchaSessionManager | None = None,
     criteria: SearchCriteria | None = None,
     avito_interval_seconds: float = 60.0,
+    avito_search_url: str | None = None,
 ) -> Dispatcher:
     router = Router(name="rent-monitor-owner")
 
@@ -98,7 +99,7 @@ def create_dispatcher(
         chat_id = message.chat.id
         allowed_chat_id = await repository.get_allowed_chat_id()
         if allowed_chat_id == chat_id:
-            await message.answer("Чат уже привязан. Команды: /status, /pause, /resume")
+            await message.answer("Чат уже привязан. Команды: /status, /avito, /pause, /resume")
             return
         if allowed_chat_id is not None:
             await message.answer("Бот уже привязан к личному чату владельца.")
@@ -126,6 +127,45 @@ def create_dispatcher(
             return False
         return await repository.get_allowed_chat_id() == message.chat.id
 
+    async def prepare_avito_window(message: Message) -> None:
+        if browser is None:
+            return
+        page = await browser.current_page()
+        if avito_search_url and (page is None or page.final_url == "about:blank"):
+            await message.answer("Открываю настроенный поиск Avito один раз для ручной проверки…")
+            try:
+                page = await browser.fetch(avito_search_url)
+            except Exception:
+                await message.answer(
+                    "Страница не загрузилась. Окно браузера доступно по ссылке ниже."
+                )
+                return
+        if page is not None:
+            if page.status_code == 403 or "проблема с ip" in page.html.lower():
+                await message.answer(
+                    "Avito ограничивает IP сервера. Это не CAPTCHA: подтверждать нечего. "
+                    "Автоматическая пауза сохранена; окно ниже показывает ответ Avito."
+                )
+
+    @router.message(Command("avito"), F.chat.type == "private")
+    async def avito_window(message: Message) -> None:
+        if not await require_owner(message):
+            return
+        if browser is None or captcha_manager is None:
+            await message.answer("Удалённый доступ к Avito не настроен.")
+            return
+        await prepare_avito_window(message)
+        session = await captcha_manager.issue("avito")
+        await message.answer(
+            "Текущее окно Avito. Включите Tailscale на телефоне. Ссылка действует 15 минут. "
+            "Открытие окна не снимает паузу при ограничении IP.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Открыть окно Avito", url=session.url)]
+                ]
+            ),
+        )
+
     @router.callback_query(F.data == "captcha:open:avito")
     async def open_captcha(callback: CallbackQuery) -> None:
         if not await require_owner_callback(callback):
@@ -135,9 +175,16 @@ def create_dispatcher(
             await callback.answer("Удалённый доступ не настроен", show_alert=True)
             return
         state = await repository.get_source_run_state("avito")
-        if state.health is not SourceRunHealth.MANUAL_ATTENTION:
+        if state.health not in {
+            SourceRunHealth.MANUAL_ATTENTION,
+            SourceRunHealth.COOLDOWN,
+            SourceRunHealth.BLOCKED,
+            SourceRunHealth.DEGRADED,
+        }:
             await callback.answer("CAPTCHA уже не ожидается", show_alert=True)
             return
+        await callback.answer("Открываю окно Avito")
+        await prepare_avito_window(callback.message)
         session = await captcha_manager.issue("avito")
         screenshot = await browser.screenshot()
         if screenshot:

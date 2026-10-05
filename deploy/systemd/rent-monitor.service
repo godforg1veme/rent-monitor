@@ -14,6 +14,8 @@ StateDirectory=rent-monitor
 StateDirectoryMode=0750
 Environment=RENT_MONITOR_DATABASE=/var/lib/rent-monitor/rent-monitor.sqlite3
 Environment=DISPLAY=:99
+Environment=XDG_CONFIG_HOME=/var/lib/rent-monitor/browser-config
+Environment=XDG_CACHE_HOME=/var/lib/rent-monitor/browser-cache
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/rent-monitor/playwright
 Environment=RENT_MONITOR_CAPTCHA_TOKEN_DIRECTORY=/run/rent-monitor-captcha/tokens
 EnvironmentFile=-/etc/rent-monitor/environment
@@ -39,7 +41,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/rent-monitor /run/rent-monitor-captcha/tokens
+ReadWritePaths=/var/lib/rent-monitor /run/rent-monitor-captcha
 
 StandardOutput=journal
 StandardError=journal

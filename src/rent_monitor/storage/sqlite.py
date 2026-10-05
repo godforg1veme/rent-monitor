@@ -730,6 +730,13 @@ class SQLiteRepository:
             )
             cleared = cursor.rowcount == 1
             await cursor.close()
+            runtime_cursor = await connection.execute(
+                "DELETE FROM source_runtime WHERE source=? "
+                "AND health IN ('cooldown', 'blocked', 'manual_attention', 'degraded')",
+                (source,),
+            )
+            cleared = cleared or runtime_cursor.rowcount == 1
+            await runtime_cursor.close()
             return cleared
 
     async def get_source_run_state(self, source: str) -> SourceRunState:

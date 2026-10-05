@@ -118,6 +118,36 @@ class FakeTelegramSender:
 
 
 class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
+    async def test_unfinished_security_check_requires_manual_attention(self) -> None:
+        browser = FixtureBrowser(
+            [
+                (
+                    439,
+                    "<h1>Доступ ограничен: проверка безопасности</h1>"
+                    "<p>Выполняется проверка, подождите...</p>",
+                )
+            ]
+        )
+        result = await AvitoCollector((SEARCH,)).collect(
+            SearchCriteria("Москва", 2, 70_000, True), browser
+        )
+        self.assertEqual(result.status, SourceHealth.PAUSED)
+        self.assertEqual(result.failure_code, "human_verification")
+        repository = SQLiteRepository(":memory:")
+        await repository.initialize()
+        try:
+            await run_source_once(
+                CollectorRuntime(AvitoCollector((SEARCH,)), browser, 60),
+                SearchCriteria("Москва", 2, 70_000, True),
+                repository,
+            )
+            self.assertEqual(
+                (await repository.get_source_run_state("avito")).health,
+                SourceRunHealth.MANUAL_ATTENTION,
+            )
+        finally:
+            await repository.close()
+
     async def test_single_403_schedules_recovery_instead_of_permanent_pause(self) -> None:
         repository = SQLiteRepository(":memory:")
         await repository.initialize()
@@ -315,6 +345,43 @@ class AvitoPipelineE2ETest(unittest.IsolatedAsyncioTestCase):
 
 
 class AvitoParserTest(unittest.TestCase):
+    def test_current_nested_address_and_metro_are_separated(self) -> None:
+        markup = card("8337233292").replace(
+            '<a data-marker="item-address" href="#address">ул. Тестовая</a>'
+            '\n      <div data-marker="item-location">Новые Черёмушки ,  6–10 мин.</div>',
+            '<div data-marker="item-address"><div data-marker="item-location">'
+            '<div><p><a data-marker="street_link">Ленинградский пр-т</a>, '
+            '<a data-marker="house_link">29к3</a></p></div>'
+            "<p><span>Динамо</span><span>, 6–10 мин.</span></p></div></div>",
+        )
+        parsed = parse_search_page(search_page(markup), SEARCH_URL)
+        self.assertEqual(parsed.candidates[0].address, "Ленинградский пр-т, 29к3")
+        self.assertEqual(parsed.candidates[0].metro, "Динамо")
+        self.assertEqual(parsed.candidates[0].metro_minutes, 10)
+
+    def test_current_public_listing_route_and_visible_search_scope(self) -> None:
+        body = search_page(
+            card(
+                "8337233292",
+                path="/moskva/kvartiry/2-k._kvartira_48_m_39_et._8337233292?context=x",
+            ),
+            selected_filters=(),
+        ).replace("<nav></nav>", '<nav><span data-marker="sort/title">По дате</span></nav>')
+        parsed = parse_search_page(body, SEARCH_URL)
+        self.assertTrue(parsed.recognized)
+        self.assertEqual(len(parsed.candidates), 1)
+        self.assertEqual(parsed.candidates[0].price_rub, 65_000)
+        self.assertTrue(parsed.context.no_commission)
+        self.assertTrue(parsed.context.long_term)
+        self.assertTrue(parsed.context.newest_first)
+        self.assertNotIn("context=", parsed.candidates[0].url)
+
+    def test_non_apartment_route_fails_closed(self) -> None:
+        parsed = parse_search_page(
+            search_page(card("8337233292", path="/moskva/garazhi/garazh_8337233292")), SEARCH_URL
+        )
+        self.assertFalse(parsed.recognized)
+
     def test_verified_no_commission_filter_supplies_missing_card_value(self) -> None:
         parsed = parse_search_page(
             search_page(

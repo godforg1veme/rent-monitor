@@ -13,7 +13,7 @@ from rent_monitor.core.models import CollectionResult, Listing, SearchCriteria, 
 from rent_monitor.parsers.avito import AvitoSearchContext, parse_search_page
 
 if TYPE_CHECKING:
-    from rent_monitor.browser.transport import PlaywrightBrowserTransport
+    from rent_monitor.browser.transport import BrowserTransport
 
 
 SOURCE = "avito"
@@ -58,7 +58,7 @@ class AvitoCollector:
     async def collect(
         self,
         criteria: SearchCriteria,
-        client: PlaywrightBrowserTransport,
+        client: BrowserTransport,
     ) -> CollectionResult:
         observed_at = datetime.now(UTC)
         now = self._monotonic()
@@ -81,6 +81,16 @@ class AvitoCollector:
                 return self._result((), SourceHealth.ERROR, "transport_error", observed_at)
 
             status_code = page.status_code
+            parsed = parse_search_page(
+                page.html,
+                page.final_url,
+                expected_city=criteria.city,
+                observed_at=page.observed_at,
+            )
+            if parsed.blocked_reason == "captcha":
+                return self._result((), SourceHealth.PAUSED, "captcha", page.observed_at)
+            if parsed.blocked_reason == "browser_verification" or status_code == 439:
+                return self._result((), SourceHealth.PAUSED, "human_verification", page.observed_at)
             if status_code in {401, 403}:
                 return self._result((), SourceHealth.PAUSED, "access_restricted", page.observed_at)
             if status_code == 429:
@@ -94,12 +104,6 @@ class AvitoCollector:
             if status_code != 200:
                 return self._result((), SourceHealth.ERROR, "http_error", page.observed_at)
 
-            parsed = parse_search_page(
-                page.html,
-                page.final_url,
-                expected_city=criteria.city,
-                observed_at=page.observed_at,
-            )
             if parsed.blocked_reason in {"captcha", "access_restricted"}:
                 return self._result(
                     (),

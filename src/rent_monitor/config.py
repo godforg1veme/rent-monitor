@@ -141,7 +141,9 @@ def _load_raw(raw: dict[str, Any], path: Path) -> RuntimeConfig:
     if not isinstance(captcha_enabled, bool) or not isinstance(token_directory_value, str):
         raise ConfigurationError("Параметры CAPTCHA имеют неверный тип")
     if public_base_url is not None:
-        if not isinstance(public_base_url, str) or not _is_safe_https_url(public_base_url):
+        from rent_monitor.browser.access_url import is_private_browser_url
+
+        if not isinstance(public_base_url, str) or not is_private_browser_url(public_base_url):
             raise ConfigurationError("Адрес CAPTCHA должен быть безопасным HTTPS URL")
         public_base_url = public_base_url.rstrip("/")
     captcha = CaptchaConfig(
@@ -223,7 +225,7 @@ def _is_safe_avito_url(url: str) -> bool:
     )
 
 
-def _is_safe_https_url(url: str) -> bool:
+def _is_safe_https_url(url: str, *, allowed_ports: tuple[int | None, ...] = (None, 443)) -> bool:
     try:
         parsed = urlsplit(url)
         return (
@@ -231,7 +233,7 @@ def _is_safe_https_url(url: str) -> bool:
             and bool(parsed.hostname)
             and parsed.username is None
             and parsed.password is None
-            and parsed.port in (None, 443)
+            and parsed.port in allowed_ports
         )
     except ValueError:
         return False

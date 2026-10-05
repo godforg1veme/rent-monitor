@@ -12,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
+from rent_monitor.browser.access_url import is_private_browser_url
+
 
 @dataclass(frozen=True, slots=True)
 class CaptchaSession:
@@ -31,7 +33,7 @@ class CaptchaSessionManager:
         ttl_seconds: int = 900,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        if not public_base_url.startswith("https://"):
+        if not is_private_browser_url(public_base_url):
             raise ValueError("public_base_url must use HTTPS")
         if ttl_seconds < 1:
             raise ValueError("ttl_seconds must be positive")
@@ -61,6 +63,7 @@ class CaptchaSessionManager:
                     "reconnect": "false",
                     "show_dot": "true",
                     "token": token,
+                    "path": f"websockify?token={token}",
                 }
             )
             session = CaptchaSession(

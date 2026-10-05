@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 from rent_monitor.core.models import (
     Candidate,
@@ -19,7 +19,7 @@ from rent_monitor.core.models import (
 
 _ALLOWED_HOSTS = frozenset({"avito.ru", "www.avito.ru"})
 _SEARCH_PATH_PREFIX = "/moskva/kvartiry/sdam/na_dlitelnyy_srok/bez_komissii-"
-_MOSCOW_LISTING_PREFIX = "/moskva/kvartiry/sdam/"
+_MOSCOW_LISTING_PREFIX = "/moskva/kvartiry/"
 _LISTING_ID = re.compile(r"(?:_|/)(\d{7,})(?:\.|/|$)")
 _FIELD_BY_MARKER = {
     "item-title": "title",
@@ -29,6 +29,8 @@ _FIELD_BY_MARKER = {
     "item-address": "address",
     "item-location": "location",
     "item-date": "published_label",
+    "street_link": "street",
+    "house_link": "house",
 }
 _EMPTY_MARKERS = (
     "ничего не найдено",
@@ -36,6 +38,7 @@ _EMPTY_MARKERS = (
     "по вашему запросу ничего не найдено",
 )
 _CAPTCHA_MARKERS = (
+    "для решения капчи",
     "captcha",
     "подтвердите, что вы не робот",
     "подтвердите что вы не робот",
@@ -113,6 +116,16 @@ class _AvitoCardReader(HTMLParser):
                 self.current_card = _RawCard(item_id.strip() if item_id else None)
 
         field_name = _FIELD_BY_MARKER.get(marker or "") if self.current_card else None
+        if (
+            self.current_card is not None
+            and field_name is None
+            and tag.lower() == "p"
+            and "location" in self.active_fields
+            and self.hidden_depth == 0
+        ):
+            line_count = sum(key.startswith("location_line_") for key in self.current_card.values)
+            field_name = f"location_line_{line_count}"
+            self.current_card.values[field_name] = []
         if self.current_card is not None and field_name and self.hidden_depth == 0:
             if field_name == "title":
                 href = attr_map.get("href")
@@ -128,6 +141,8 @@ class _AvitoCardReader(HTMLParser):
                 page_field_name = "heading"
             elif marker == "filter-active" and attr_map.get("aria-pressed") != "false":
                 page_field_name = "selected_filter"
+            elif marker == "sort/title":
+                page_field_name = "sort"
             if page_field_name:
                 self.active_page_fields.append(page_field_name)
 
@@ -214,10 +229,13 @@ def _field(card: _RawCard, name: str) -> str | None:
     return _clean(card.values.get(name, []))
 
 
-def _page_block_reason(visible_text: str) -> str | None:
+def page_block_reason(visible_text: str) -> str | None:
+    """Distinguish a pending automatic browser check from a manual challenge."""
     text = visible_text.casefold().replace("ё", "е")
     if any(marker.replace("ё", "е") in text for marker in _CAPTCHA_MARKERS):
         return "captcha"
+    if "проверка безопасности" in text and "выполняется проверка" in text:
+        return "browser_verification"
     if any(marker.replace("ё", "е") in text for marker in _ACCESS_MARKERS):
         return "access_restricted"
     return None
@@ -353,6 +371,8 @@ def _listing_url(raw_href: str | None, base_url: str, source_id: str) -> tuple[s
     match = _LISTING_ID.search(parts.path)
     if not match or match.group(1) != source_id:
         return None, False
+    if not re.match(r"^/[^/]+/kvartiry/", parts.path):
+        return None, False
     if not parts.path.startswith(_MOSCOW_LISTING_PREFIX):
         return None, True
     canonical = urlunsplit(("https", host, parts.path, "", ""))
@@ -397,7 +417,21 @@ def _candidate(
         status = CommissionStatus.NONE
         commission_value = 0
         commission_evidence = FieldEvidence.VERIFIED_FILTER
-    metro, metro_minutes = _metro(_field(card, "location"))
+    street, house = _field(card, "street"), _field(card, "house")
+    address = (
+        ", ".join(value.strip(" ,") for value in (street, house) if value)
+        if street
+        else _field(card, "address")
+    )
+    location_lines = [
+        value
+        for key in card.values
+        if key.startswith("location_line_")
+        if (value := _field(card, key)) is not None
+    ]
+    metro, metro_minutes = _metro(
+        location_lines[-1] if len(location_lines) >= 2 else _field(card, "location")
+    )
     return (
         Candidate(
             source="avito",
@@ -405,7 +439,7 @@ def _candidate(
             url=url,
             price_rub=price,
             title=title,
-            address=_field(card, "address"),
+            address=address,
             rooms=_rooms(title),
             area_m2=_area(title),
             metro=metro,
@@ -439,6 +473,16 @@ def parse_search_page(
     observed_at: datetime | None = None,
 ) -> SearchPageParse:
     """Parse explicitly marked listing cards from Avito's public search HTML."""
+    reader = _AvitoCardReader()
+    try:
+        reader.feed(html)
+        reader.close()
+    except Exception:
+        return SearchPageParse(recognized=False, candidates=[])
+    outside_text = " ".join(" ".join(reader.outside_text).split())
+    blocked_reason = page_block_reason(outside_text)
+    if blocked_reason and not reader.cards:
+        return SearchPageParse(recognized=False, candidates=[], blocked_reason=blocked_reason)
     try:
         base_parts = urlsplit(base_url)
     except ValueError:
@@ -458,21 +502,6 @@ def parse_search_page(
             blocked_reason="unexpected_search_route",
         )
 
-    reader = _AvitoCardReader()
-    try:
-        reader.feed(html)
-        reader.close()
-    except Exception:
-        return SearchPageParse(recognized=False, candidates=[])
-
-    outside_text = " ".join(" ".join(reader.outside_text).split())
-    blocked_reason = _page_block_reason(outside_text)
-    if blocked_reason and not reader.cards:
-        return SearchPageParse(
-            recognized=False,
-            candidates=[],
-            blocked_reason=blocked_reason,
-        )
     if reader.invalid_structure:
         return SearchPageParse(recognized=False, candidates=[])
 
@@ -485,17 +514,25 @@ def parse_search_page(
     normalized_heading = (heading or "").casefold().replace("ё", "е")
     normalized_city = expected_city.casefold().replace("ё", "е")
     city_marker = "москв" if normalized_city == "москва" else normalized_city
+    # The current desktop layout names the active no-commission search in its
+    # visible H1, without filter-active buttons. Require route + heading + SERP,
+    # never the configured URL alone, before supplying missing card evidence.
+    visible_search_scope = (
+        city_marker in normalized_heading
+        and "длительн" in normalized_heading
+        and "без комисси" in normalized_heading
+        and reader.primary_seen
+    )
+    date_sort = "по дате" in " ".join(reader.page_values.get("sort", [])).casefold()
     context = AvitoSearchContext(
         recognized=reader.primary_seen and city_marker in normalized_heading,
         city=expected_city if city_marker in normalized_heading else None,
         long_term="длительн" in normalized_heading,
-        no_commission=(
-            base_parts.path.startswith(_SEARCH_PATH_PREFIX)
-            and "без комисси" in normalized_heading
-            and any("без комисси" in value for value in selected_filters)
-            and reader.primary_seen
+        no_commission=(base_parts.path.startswith(_SEARCH_PATH_PREFIX) and visible_search_scope),
+        newest_first=(
+            any("сначала новые" in value for value in selected_filters)
+            or (date_sort and parse_qs(base_parts.query).get("s") == ["104"])
         ),
-        newest_first=any("сначала новые" in value for value in selected_filters),
     )
     if not reader.cards:
         lowered = outside_text.casefold()

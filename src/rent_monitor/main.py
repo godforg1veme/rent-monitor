@@ -13,7 +13,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from rent_monitor.browser.captcha import CaptchaSessionManager
-from rent_monitor.browser.transport import PlaywrightBrowserTransport
+from rent_monitor.browser.factory import create_browser_transport
+from rent_monitor.browser.transport import BrowserTransport
 from rent_monitor.collectors import build_collectors
 from rent_monitor.config import ConfigurationError, load_config, read_telegram_token
 from rent_monitor.core.scheduler import CollectorRuntime, run_collectors, run_outbox_worker
@@ -38,17 +39,22 @@ async def serve(config_path: Path) -> None:
     await repository.initialize()
     state_changed = asyncio.Event()
     stop_event = asyncio.Event()
-    browser: PlaywrightBrowserTransport | None = None
+    browser: BrowserTransport | None = None
     captcha_manager: CaptchaSessionManager | None = None
 
     try:
         if any(collector.source == "avito" for collector in collectors):
-            profile_path = config.database_path.parent / "avito-browser-profile"
-            browser = PlaywrightBrowserTransport(profile_path, headless=False)
+            browser = create_browser_transport(
+                config.database_path.parent, config.max_response_bytes
+            )
             await browser.start()
         avito_config = next((source for source in config.sources if source.name == "avito"), None)
-        if config.captcha.enabled:
-            if browser is None or config.captcha.public_base_url is None:
+        if config.captcha.enabled and config.captcha.public_base_url is None:
+            logger.warning(
+                "CAPTCHA remote access unavailable: configure RENT_MONITOR_CAPTCHA_BASE_URL"
+            )
+        elif config.captcha.enabled:
+            if browser is None:
                 raise ConfigurationError(
                     "Для CAPTCHA нужны включённый Avito и captcha.public_base_url"
                 )
@@ -63,6 +69,7 @@ async def serve(config_path: Path) -> None:
             browser=browser,
             captcha_manager=captcha_manager,
             criteria=config.criteria,
+            avito_search_url=(avito_config.searches[0].url if avito_config is not None else None),
             avito_interval_seconds=(
                 avito_config.poll_interval_seconds if avito_config is not None else 60
             ),

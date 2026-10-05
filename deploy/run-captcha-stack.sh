@@ -39,10 +39,11 @@ if [[ ! -S /tmp/.X11-unix/X99 ]]; then
     exit 1
 fi
 
-x11vnc -display :99 -rfbport 5900 -listen 127.0.0.1 -forever -shared -nopw &
+x11vnc -display :99 -rfbport 5900 -rfbportv6 -1 -listen 127.0.0.1 \
+    -no6 -noipv6 -forever -shared -nopw &
 pids+=("$!")
 
-websockify \
+/opt/rent-monitor/current/.venv/bin/websockify \
     --web "$NOVNC_ROOT" \
     --token-plugin TokenFileName \
     --token-source "$TOKEN_DIRECTORY" \

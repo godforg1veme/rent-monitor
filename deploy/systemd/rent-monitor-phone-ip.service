@@ -1,0 +1,19 @@
+# managed-by: rent-monitor
+[Unit]
+Description=Rent Monitor private Tailscale IP browser access
+After=tailscaled.service rent-monitor-captcha.service
+Wants=tailscaled.service rent-monitor-captcha.service
+
+[Service]
+User=rent-monitor
+Group=rent-monitor
+EnvironmentFile=/etc/rent-monitor/phone-address
+ExecStart=/opt/rent-monitor/current/.venv/bin/websockify --web /usr/share/novnc --token-plugin TokenFileName --token-source /run/rent-monitor-captcha/tokens ${RENT_MONITOR_PHONE_BIND}:10001
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
