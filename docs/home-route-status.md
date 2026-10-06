@@ -30,3 +30,9 @@
 [Команды и установка](../deploy/home-route/README.md). При выключении ПК источник получает `home_route_unavailable` и повторяется через 60 секунд, без часового backoff. Другие ошибки остаются видимыми в `/status`. Автоматический вход до авторизации Windows не настроен; задача запускается после входа пользователя. Экран может выключаться, автоматический сон блокируется пока supervisor работает.
 
 Резервная копия первоначального переключения: `/opt/rent-monitor/backups/20261006-home-pow`. Прежний релиз: `/opt/rent-monitor/releases/20260930-firefox-recovery`. Откат кода не должен автоматически откатывать базу: это потеряло бы новые объявления и историю доставки.
+
+## Git и развёртывание
+
+Основной репозиторий: [godforg1veme/rent-monitor](https://github.com/godforg1veme/rent-monitor). Ветки `docs/vps-rollout-status`, `feat/avito-telegram-alerts`, `feat/core-storage`, `feat/sources-avito-cian`, `feat/sources-domclick-yandex` и ветка обновления setup-uv синхронизируются с `main` обычным fast-forward. Исходные коммиты ранее squash-слитых веток сохранены merge-коммитами; force push не используется.
+
+VPS получает архив опубликованного коммита, новый каталог релиза, собственное окружение из lock-файла и файл `REVISION`. Windows запускает supervisor из `F:\rent-monitor\deploy\home-route`; состояние и логи находятся в `%LOCALAPPDATA%\RentMonitor\home-route`. Исследовательские каталоги больше не нужны для следующего запуска.
