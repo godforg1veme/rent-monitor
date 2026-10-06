@@ -33,7 +33,6 @@ PY
 chmod 0600 "$backup/before.sqlite3"
 install -m 0644 "$release/deploy/home-route/home-pow-worker.py" "$runtime/"
 install -m 0644 "$release/deploy/home-route/rent_adapter.py" "$runtime/"
-ln -sfn "$vendor" "$runtime/vendor"
 install -d /etc/systemd/system/rent-monitor.service.d
 install -m 0644 "$release/deploy/home-route/home-route.conf" /etc/systemd/system/rent-monitor.service.d/home-route.conf
 install -m 0644 "$release/deploy/home-route/90-rent-home-route.conf" /etc/ssh/sshd_config.d/90-rent-home-route.conf
