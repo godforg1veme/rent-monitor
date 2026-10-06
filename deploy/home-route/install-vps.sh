@@ -16,9 +16,9 @@ if [ ! -d "$vendor/.git" ]; then
 fi
 test "$(git -C "$vendor" rev-parse HEAD)" = "$pin"
 python3 -m venv "$release/.venv"
-"$release/.venv/bin/pip" install -r "$release/deploy/home-route/requirements-main.lock.txt"
-if [ ! -x "$runtime/.venv/bin/python" ]; then python3 -m venv "$runtime/.venv"; fi
-"$runtime/.venv/bin/pip" install -r "$release/deploy/home-route/requirements-worker.lock.txt"
+"$release/.venv/bin/python" -m pip install -r "$release/deploy/home-route/requirements-main.lock.txt"
+if [ ! -x "$runtime/worker-venv/bin/python" ]; then python3 -m venv "$runtime/worker-venv"; fi
+"$runtime/worker-venv/bin/python" -m pip install -r "$release/deploy/home-route/requirements-worker.lock.txt"
 backup="/opt/rent-monitor/backups/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup"
 readlink /opt/rent-monitor/current > "$backup/previous-release.txt"
