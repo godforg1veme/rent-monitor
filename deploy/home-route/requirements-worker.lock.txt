@@ -10,7 +10,7 @@ numpy==2.5.3
 onnxruntime==1.30.0
 opencv-python-headless==5.0.0.93
 packaging==26.3
-pillow==12.3.0
+pillow==13.0.0
 protobuf==7.36.2
 pycparser==3.0
 pycryptodome==3.24.0
