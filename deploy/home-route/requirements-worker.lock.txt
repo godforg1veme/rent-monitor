@@ -1,5 +1,5 @@
 # Exact versions from the verified Linux worker on 2026-10-06.
-certifi==2026.7.22
+certifi==2026.10.18
 cffi==2.1.1
 charset-normalizer==3.5.2
 curl_cffi==0.16.3
